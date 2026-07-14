@@ -18,6 +18,7 @@ Usage:
   python3 opengds.py info     <file.gdc>
   python3 opengds.py batch    <directory>
   python3 opengds.py audit    <directory>
+  under MIT LICENCE, see LICENSE file for full terms.
 """
 
 import sys, os, struct, ctypes, math, re
