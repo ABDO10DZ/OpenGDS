@@ -18,7 +18,7 @@ Usage:
   python3 opengds.py info     <file.gdc>
   python3 opengds.py batch    <directory>
   python3 opengds.py audit    <directory>
-  under MIT LICENCE, see LICENSE file for full terms.
+  under MIT LICENSE.
 """
 
 import sys, os, struct, ctypes, math, re
@@ -48,6 +48,7 @@ _Z = _zstd()
 # ═══════════════════════════════════════════════════════════════
 class GDC:
     def __init__(self, path):
+        self.path = path  # <-- fixed missing attribute
         raw = open(path, 'rb').read()
         if raw[:4] != b'GDSC':
             raise ValueError("Not a .gdc file")
@@ -103,9 +104,7 @@ class GDC:
             lo = self.trailer[i] & 0xFF
             reg = self.trailer[i+1] & 0xFF
             if lo in (0x88, 0xC2):
-                # the register now holds a new variable; keep the name if not already mapped
                 if reg not in reg_map:
-                    # try to find a suitable name from identifiers (fallback to _rNN)
                     reg_map[reg] = self.global_reg2id.get(reg, f'_r{reg}')
         return reg_map
 
@@ -431,15 +430,10 @@ def reconstruct(g):
         if leftover: ret = f' -> {leftover[-1]}'
         out.append(f'{static_kw}func {fname}({", ".join(psig)}){ret}:')
 
-        # Determine the bytecode range for this function (from line chunks)
         fn_lns = fn_chunks[fi] if fi < len(fn_chunks) else []
         if not fn_lns:
             out.append('\tpass')
         else:
-            # build a temporary register map from the first few LOAD_VARs in the trailer
-            # we don't have exact trailer offsets, so we use the class‑bc line groups with a fallback
-            # For now, use the global_reg2id as an approximation; the real fix requires trailer parsing.
-            # (Future version will integrate full trailer decompilation.)
             reg_map = dict(g.global_reg2id)   # simplified – will be improved later
             indent = 1
             for ln in fn_lns:
@@ -456,7 +450,6 @@ def reconstruct(g):
                     indent = max(1, indent-1)
         out.append('')
 
-    # fallback: if no functions, print string constants as comments
     if not funcs and str_vals:
         out.append('# String constants:')
         for v in str_vals[:20]:
