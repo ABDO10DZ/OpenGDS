@@ -1,11 +1,13 @@
 # OpenGDS v1.0 Beta
 
-**A Godot 4.6.x GDScript decompiler, disassembler, and security auditor**  
+**A Godot GDScript bytecode decompiler, disassembler, constant extractor, and security auditor**  
 By **ABDO10_DZ / 0xbytecode**
 
-OpenGDS is a cross‑platform reverse‑engineering tool that reads compiled Godot `.gdc` files and reconstructs readable GDScript source code. It also includes a full disassembler, batch scanner, and automated security auditor. It runs natively on Android (Termux), Linux, Windows, and macOS.
+OpenGDS reads compiled Godot `.gdc` files and reconstructs readable GDScript. It also provides bytecode/token disassembly, hexadecimal dumps, constant extraction, recursive batch processing, and security auditing.
 
-> ⚠️ **Beta Release** – This version is stable for class‑structure extraction, disassembly, and security audits. Function‑body decompilation is functional but may produce imperfect code for complex scripts. A future release will deliver fully compilable output.
+The current implementation has been tested against **Godot GDSC v101** files from both a **Godot 4.6.2 corpus** and supplied **Godot 4.7.1** source/decompilation pairs.
+
+> ⚠️ **Beta Release** – The decompiler is substantially functional, but exact source recovery is not possible for information discarded during compilation, especially comments. When original source is available, the recommended validation method is a byte-level/hash comparison after removing comments.
 
 ---
 
@@ -13,117 +15,291 @@ OpenGDS is a cross‑platform reverse‑engineering tool that reads compiled God
 
 | Feature | Description |
 |---------|-------------|
-| **Source Reconstruction** | Recovers `extends`, `class_name`, `enum`, `const`, `var`, `signal`, and function signatures. Function bodies are rebuilt as readable GDScript (quality varies; see limitations). |
-| **Disassembler** | Full token dump with opcode mnemonics and register annotations. |
-| **Identifier / Constant Dump** | Extract all variable names, function names, and constants (strings, numbers). |
-| **Batch Scanner** | Recursively processes directories and aggregates identifiers & strings across all `.gdc` files. |
-| **Security Auditor** | Automated scan for hardcoded URLs, IPs, API keys, debug flags, and secrets. |
-| **Zstd Decompression** | Handles Godot 4.6.x compressed bytecode (v101) out‑of‑the‑box. |
-| **Multi‑Platform** | Runs wherever Python 3 and `libzstd` are available – Termux, Linux, Windows, macOS. |
+| **GDScript Reconstruction (`dcmp`)** | Reconstructs readable GDScript including class declarations, inheritance, variables, constants, functions, expressions, control flow, casts, calls, NodePaths, and nested statements. |
+| **Disassembler (`disasm`)** | Displays the decoded bytecode/token stream for low-level reverse engineering. |
+| **Hex Dump (`hexdump`)** | Produces a hexadecimal representation of the raw `.gdc` data. |
+| **Constant Dump (`consts`)** | Extracts and displays constants contained in the compiled script. |
+| **Security Audit (`audit`)** | Scans scripts for potentially sensitive material such as hardcoded URLs, IP addresses, credentials, API keys, tokens, debug indicators, and other suspicious strings. |
+| **Recursive Batch Processing** | A file path processes one `.gdc`; a directory recursively processes `.gdc` files in all subdirectories. |
+| **GDSC v101 Validation** | Rejects unsupported GDSC versions instead of silently interpreting incompatible data. |
+| **Zstandard Support** | Handles compressed GDSC v101 data used by the tested Godot 4.x files. |
+| **Multi-Platform** | Designed for Python 3 environments including Termux/Android, Linux, Windows, and macOS. |
 
 ---
 
-## 📋 Planned Features (Todo)
+## 🧪 Validation Status
 
-| Priority | Feature | Status |
-|----------|---------|--------|
-| 🔴 Highest | **Full compilable decompiler** – accurate expression folding, control‑flow reconstruction, variable naming. | Under active development |
-| 🔴 High | **.gde encryption support** – cross‑platform AES key extraction and real‑time decryption. | Planned |
-| 🟡 Medium | **.pck archive parsing** – unpack Godot asset packages and decompile scripts inside. | Planned |
-| 🟡 Medium | **Godot 3.x support** – backwards compatibility for older bytecode formats. | Planned |
-| 🟡 Medium | **Godot 4.7 coverage** – ensure compatibility with the next engine version. | Planned |
-| 🟢 Low | **Advanced Security Audit** – deeper RPC analysis, data‑flow tracing, vulnerability scoring. | Planned |
+OpenGDS has been tested using the fix → test → compare → fix regression workflow.
+
+### Godot 4.7.1 source pairs
+
+The supplied compiled/source pairs were tested with hash and byte-level comparison:
+
+| Pair | Result |
+|------|--------|
+| `game.gdc` → `game.gd` | ✅ Exact byte match |
+| `bullet.gdc` → `bullet.gd` | ✅ Exact byte match |
+| `gun.gdc` → `gun.gd` | ✅ Exact after comment removal |
+| `player.gdc` → `player.gd` | ✅ Exact after comment removal |
+
+Comments are not reliably recoverable from compiled GDSC token data, so comment-containing files are validated after removing comments and comment-only blank lines.
+
+### Godot 4.6.2 corpus
+
+The supplied ZIP contains **693 `.gdc` files**. A representative 20-file validation set was processed successfully across all five modes:
+
+```text
+20 × 5 modes = 100 operations
+100 successful
+0 failures
+```
+
+The corpus was identified as **GDSC v101** in the tested files.
+
+> The 693-file corpus does not include original `.gd` sources, so byte-for-byte source equivalence cannot be proven for those files. Successful decoding is verified; exact reconstruction requires the corresponding original source.
 
 ---
 
-## 📥 Installation
+## 📋 Current CLI
 
-1. **Install Python 3.7+**  
-   On Termux: `pkg install python`  
-   On Linux/macOS: usually pre‑installed.
+```text
+python OpenGDS.py <mode> <file-or-folder>
+```
 
-2. **Install libzstd**  
-   - Termux: `pkg install zstd`  
-   - Ubuntu/Debian: `sudo apt install libzstd-dev`  
-   - Windows: use a pre‑compiled `libzstd.dll` (place in the same folder).
-
-3. **Download OpenGDS**  
-   Clone the repository or copy the script to your device. The script is a single file: `opengds.py`.
-
-4. **Run it**  
-   ```bash
-   python3 opengds.py source myfile.gdc
-   ```
-
----
-
-## 📖 Usage
-
-All commands accept a `.gdc` file or a directory (for batch/audit).
+### Modes
 
 | Command | Description |
 |---------|-------------|
-| `source <file>` | Reconstruct GDScript source from the bytecode. |
-| `disasm <file>` | Show annotated bytecode dump. |
-| `ids <file>` | List all identifiers (variables, functions, classes). |
-| `consts <file>` | Show all constants (strings, numbers). |
-| `info <file>` | Display file metadata (version, counts, class info). |
-| `batch <dir>` | Scan all `.gdc` files recursively and print top identifiers / strings. |
-| `audit <dir>` | Search for hardcoded URLs, IPs, API keys, debug flags. |
+| `dcmp` | Decompile/reconstruct GDScript. |
+| `hexdump` | Produce a hexadecimal dump. |
+| `consts` | Dump constants. |
+| `audit` | Run the security audit. |
+| `disasm` | Show the decoded/disassembled token stream. |
+
+Every mode accepts either:
+
+- **A single `.gdc` file**
+- **A directory**, recursively scanning its subdirectories for `.gdc` files
 
 ### Examples
 
 ```bash
-# Decompile a single script
-python3 opengds.py source button_translate.gdc
+# Decompile one file
+python3 OpenGDS.py dcmp assets/game.gdc
 
-# List all constants in a file
-python3 opengds.py consts AndroidBilling.gdc
+# Recursively decompile a directory
+python3 OpenGDS.py dcmp assets/
 
-# Scan a whole game for secrets
-python3 opengds.py audit ../game_assets/
+# Hex dump
+python3 OpenGDS.py hexdump assets/game.gdc
 
-# Batch‑analyse identifiers across the entire project
-python3 opengds.py batch ../game_assets/ > all_strings.txt
+# Extract constants
+python3 OpenGDS.py consts assets/game.gdc
+
+# Security audit
+python3 OpenGDS.py audit assets/
+
+# Disassemble
+python3 OpenGDS.py disasm assets/game.gdc
 ```
+
+For recursive operations, OpenGDS reports each successfully processed file and the output directory.
 
 ---
 
-## 💡 Important Notes
+## 📂 Batch Output
 
-- **Beta limitations** – Function bodies may contain raw register names (`_rNN`) or incomplete expressions in complex scripts.  
-  We are actively working on a full expression folder and control‑flow reconstruction for the next release.
-- **Shaders** – Godot shader `.gdc` files are not yet fully supported; decompilation will produce low‑level listings.
-- **Encrypted scripts (`.gde`)** – Not yet decrypted by this version. A separate key extraction tool is coming.
-- **Godot 3.x / 4.7** – These formats differ; support is planned but not yet available.
+When a directory is supplied, OpenGDS recursively finds `.gdc` files and preserves their relative structure in the generated output.
+
+Example:
+
+```text
+assets/
+├── game.gdc
+└── player/
+    └── player.gdc
+```
+
+produces output equivalent to:
+
+```text
+assets.dcmp/
+├── game.gd
+└── player/
+    └── player.gd
+```
+
+The same recursive model is used by the other output-producing modes.
+
+---
+
+## 🔐 Security Audit
+
+`audit` is intended for defensive reverse engineering and security research.
+
+It can flag patterns such as:
+
+- URLs
+- IPv4 addresses
+- API keys
+- access tokens
+- JWT-like strings
+- private-key material
+- passwords/credentials
+- debug/development indicators
+- suspicious embedded strings
+
+Audit findings should be treated as **indicators for manual review**, not proof of a vulnerability. Values that resemble secrets may be false positives.
+
+---
+
+## ⚙️ Installation
+
+### Python
+
+Python 3.7+ is recommended.
+
+### Termux / Android
+
+```bash
+pkg install python
+pkg install zstd
+```
+
+### Linux
+
+Install Python 3 and the system Zstandard library/development package appropriate for your distribution.
+
+### Windows / macOS
+
+Install Python 3 and make sure the required Zstandard runtime/library is available to the Python environment used by OpenGDS.
+
+Then copy `OpenGDS.py` to your working directory.
+
+---
+
+## 🧬 GDSC Compatibility
+
+The current tested target is:
+
+```text
+GDSC version: 101
+```
+
+This has been tested with:
+
+- **Godot 4.6.2** compiled scripts
+- **Godot 4.7.1** compiled scripts
+
+The fact that both tested releases use GDSC v101 does **not** mean every future Godot 4.x release is automatically compatible. OpenGDS explicitly validates the GDSC version and should reject unsupported versions rather than attempting unsafe interpretation.
+
+### Not currently guaranteed
+
+- Godot 3.x bytecode
+- Unsupported/unknown GDSC versions
+- Encrypted `.gde` scripts
+- Arbitrary future Godot bytecode changes
+
+---
+
+## ⚠️ Limitations
+
+### Comments
+
+Original comments may be absent from compiled GDSC data. Therefore:
+
+```text
+original source
+        ≠
+decompiled source
+```
+
+can differ only because of comments even when the executable GDScript reconstruction is otherwise exact.
+
+For source validation, compare:
+
+1. raw SHA-256 first;
+2. if different, remove comments/comment-only blank lines from both;
+3. compare SHA-256 again;
+4. if still different, perform a byte-level diff.
+
+### Source formatting
+
+OpenGDS reconstructs source from compiled information. Formatting that was discarded by compilation cannot always be recovered exactly. The goal is syntactically valid, semantically faithful GDScript rather than preservation of every original whitespace choice.
+
+---
+
+## 🛠️ Development / Regression Testing
+
+The recommended development loop is:
+
+```text
+GDC
+ ↓
+decompile
+ ↓
+compare with original GD
+ ↓
+SHA-256 / byte diff
+ ↓
+identify first divergence
+ ↓
+fix decoder/reconstructor
+ ↓
+rerun regression tests
+```
+
+Known source pairs should remain regression tests whenever the decompiler is modified.
+
+---
+
+## 📋 Planned Features
+
+| Priority | Feature | Status |
+|----------|---------|--------|
+| 🟡 Medium | Expanded Godot version coverage | Planned |
+| 🟡 Medium | `.pck` archive parsing/unpacking | Planned |
+| 🟡 Medium | Godot 3.x support | Planned |
+| 🟡 Medium | Richer control-flow reconstruction | Planned |
+| 🟢 Low | Advanced data-flow/security analysis | Planned |
+| 🟢 Low | Improved source formatting recovery | Planned |
+| 🟢 Low | Encrypted `.gde` research/support | Planned |
 
 ---
 
 ## 🤝 Contributing & Support
 
-OpenGDS is currently a solo project by **ABDO10_DZ / 0xbytecode**. If you find a bug, have a feature request, or want to help with development:
+OpenGDS is currently a solo project by **ABDO10_DZ / 0xbytecode**.
 
-- Open an issue on the [GitHub repository](https://github.com/ABDO10DZ/opengds)  
-- Email: `abdo10_dz@proton.me` (please include “OpenGDS” in the subject)
+- GitHub: https://github.com/ABDO10DZ/opengds
+- Email: `abdo10_dz@proton.me`
+- Ko-fi: https://ko-fi.com/0xbytecode
 
-If this tool saved your project or helped you in your security research, consider **buying me a coffee** ☕  
-[Ko-fi](https://ko-fi.com/0xbytecode)
+Bug reports should include:
+
+- OpenGDS version
+- GDSC version
+- Godot version, if known
+- the relevant command
+- terminal output/error
+- a minimal `.gdc` sample when legally shareable
 
 ---
 
 ## 📜 License
 
-OpenGDS is released under the **MIT License**. See `LICENSE` file for details.
+OpenGDS is released under the **MIT License**. See `LICENSE` for details.
 
 ---
 
 ## 🏆 Credits
 
-- **0xbytecode** – reverse‑engineering of the Godot 4.6.x bytecode format, opcode mapping, and initial proof‑of‑concept.
-- **DeepSeek** – assisted with algorithm design and problem‑solving throughout development.
-- **Claude (Anthropic)** – helped refine the decompiler logic and opcode table.
-- All the open‑source Godot community for building an engine worth exploring.
+- **0xbytecode / ABDO10_DZ** – reverse engineering of the Godot GDSC format, opcode mapping, parser, reconstruction, and security tooling.
+- **DeepSeek** – assisted with algorithm design and problem-solving during development.
+- **Claude (Anthropic)** – assisted with decompiler logic, regression analysis, and opcode reconstruction.
+- **chatGPT** - did the last touches and fixed many remaining issues. 
+- **Godot community** – for the open-source engine and publicly available implementation details.
 
 ---
 
-*OpenGDS is provided for educational and security research purposes. Always respect the terms of service of the software you analyze.*
+*OpenGDS is provided for educational, interoperability, and authorized security research. Only analyze software you have permission to reverse engineer.*
