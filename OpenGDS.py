@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
-"""OpenGDS / OGDS                                 GDSC inspector/decompiler for the supplied Godot 4.x GDSC v101 corpus.                                                                                Usage:                                              python3 OpenGDS.py dcmp <file-or-folder>          python3 OpenGDS.py hexdump <file-or-folder>       python3 OpenGDS.py consts <file-or-folder>        python3 OpenGDS.py audit <file-or-folder>         python3 OpenGDS.py disasm <file-or-folder>                                                        Folders are processed recursively. For folder input, generated artifacts are                        written under <folder>.<mode>/ by default. Use --outdir to choose another root.                     """                                               from __future__ import annotations
-import argparse, json, math, os, re, struct, subprocess, tempfile, zipfile                          from dataclasses import dataclass                 from pathlib import Path                          from typing import Iterable                       
+"""OpenGDS / OGDS
+GDSC inspector/decompiler for the supplied Godot 4.x GDSC v101 corpus.
+
+Usage:
+  python3 OpenGDS.py dcmp <file-or-folder>
+  python3 OpenGDS.py hexdump <file-or-folder>
+  python3 OpenGDS.py consts <file-or-folder>
+  python3 OpenGDS.py audit <file-or-folder>
+  python3 OpenGDS.py disasm <file-or-folder>
+
+Folders are processed recursively. For folder input, generated artifacts are
+written under <folder>.<mode>/ by default. Use --outdir to choose another root.
+"""
+from __future__ import annotations
+import argparse, json, math, os, re, struct, subprocess, tempfile, zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
 TOK = [
 "EMPTY","ANNOTATION","IDENTIFIER","LITERAL","LESS","LESS_EQUAL","GREATER","GREATER_EQUAL","EQUAL_EQUAL","BANG_EQUAL",
 "AND","OR","NOT","AMPERSAND_AMPERSAND","PIPE_PIPE","BANG","AMPERSAND","PIPE","TILDE","CARET","LESS_LESS","GREATER_GREATER",
@@ -45,20 +62,30 @@ def read_variant(b,p):
         return ('NODEPATH',path),p
     raise ValueError(f'unsupported Variant type {typ} at 0x{p-4:x}')
 
-def decode_gdsc(data:bytes):
+def decode_payload(data:bytes):
+    """Validate GDSC v101 and return (version, decoded_size, decoded_payload)."""
     if data[:4]!=b'GDSC':raise ValueError('not GDSC')
+    if len(data)<12:raise ValueError('short GDSC header')
     version=u32(data,4)
     if version != 101:
-        raise ValueError(f'unsupported GDSC version {version}; OpenGDS currently supports GDSC v101 (Godot 4.6.x/4.7.x compatible format)')
+        raise ValueError(f'unsupported GDSC version {version}; OpenGDS currently supports GDSC v101')
     dec_size=u32(data,8);payload=data[12:]
     if dec_size and len(payload)!=dec_size:
         with tempfile.TemporaryDirectory() as td:
             a=Path(td)/'in.zst';o=Path(td)/'out.bin';a.write_bytes(payload)
-            r=subprocess.run(['zstd','-q','-d','-f',str(a),'-o',str(o)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-            if r.returncode:raise ValueError('zstd decompression failed: '+r.stderr.decode(errors='replace'))
+            r=subprocess.run(['zstd','-q','-d','-f',str(a),'-o',str(o)],
+                             stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            if r.returncode:
+                raise ValueError('zstd decompression failed: '+r.stderr.decode(errors='replace'))
             raw=o.read_bytes()
-    else:raw=payload
-    if dec_size and len(raw)!=dec_size:raise ValueError('decompressed size mismatch')
+    else:
+        raw=payload
+    return version,dec_size,raw
+
+def decode_gdsc(data:bytes):
+    version, dec_size, raw = decode_payload(data)
+    if dec_size and len(raw)!=dec_size:
+        raise ValueError(f'decompressed size mismatch: expected {dec_size}, got {len(raw)}')
     if len(raw)<16:raise ValueError('short payload')
     id_n,const_n,line_n,tok_n=struct.unpack_from('<4I',raw,0);p=16;ids=[]
     for _ in range(id_n):
@@ -384,10 +411,44 @@ def audit_report(path,decoded):
     out.append('NOTE: Audit is heuristic/static; absence of findings is not proof of security.')
     return '\n'.join(out)+'\n'
 
+
+def const_summary(path, decoded):
+    version,ids,constants,lm,cm,toks=decoded
+    counts={}
+    for v in constants:
+        if isinstance(v,tuple): k=v[0].lower()
+        elif v is None: k='null'
+        elif isinstance(v,bool): k='bool'
+        elif isinstance(v,int): k='int'
+        elif isinstance(v,float): k='float'
+        elif isinstance(v,str): k='string'
+        else: k=type(v).__name__.lower()
+        counts[k]=counts.get(k,0)+1
+    parts=', '.join(f'{k}={counts[k]}' for k in sorted(counts))
+    return f'{path}: constants={len(constants)} ({parts or "none"})'
+
+def audit_summary(path, decoded):
+    report=audit_report(path,decoded)
+    if 'RESULT: No ' in report:
+        return f'{path}: findings=0'
+    m=re.search(r'^FINDINGS:\s*(\d+)',report,re.M)
+    total=int(m.group(1)) if m else 0
+    kinds={}
+    for line in report.splitlines():
+        m=re.match(r'- (?:POSSIBLE_SECRET \[([^\]]+)\]|URL \[([^\]]+)\]|DYNAMIC_EXECUTION)',line)
+        if m:
+            k=next((x for x in m.groups() if x), 'other')
+            kinds[k]=kinds.get(k,0)+1
+    suffix=', '.join(f'{k}={v}' for k,v in sorted(kinds.items()))
+    return f'{path}: findings={total}' + (f' ({suffix})' if suffix else '')
+
 def process_one(mode,path,stdout=False):
+    if mode=='hexdump':
+        # Hexdump the decoded GDSC payload, not the compressed GDSC container.
+        _version, _header_field, raw = decode_payload(Path(path).read_bytes())
+        return hexdump(raw)
     decoded=decode_file(path)
     if mode=='dcmp':return reconstruct(decoded[1],decoded[2],decoded[3],decoded[5])
-    if mode=='hexdump':return hexdump(Path(path).read_bytes())
     if mode=='consts':return const_report(path,decoded)
     if mode=='disasm':return disasm_report(path,decoded)
     if mode=='audit':return audit_report(path,decoded)
@@ -417,9 +478,14 @@ def main():
     root.mkdir(parents=True,exist_ok=True)
     base=p.resolve()
     ok=bad=0
+    summaries=[]
     for f in files:
         try:
             result=process_one(args.mode,f)
+            if args.mode=='consts':
+                summaries.append(const_summary(f, decode_file(f)))
+            elif args.mode=='audit':
+                summaries.append(audit_summary(f, decode_file(f)))
             rel=f.resolve().relative_to(base)
             ext='.gd' if args.mode=='dcmp' else ('.hex' if args.mode=='hexdump' else f'.{args.mode}.txt')
             dest=root/rel
@@ -434,6 +500,13 @@ def main():
             if not args.continue_on_error:
                 print('Stopped. Use --continue-on-error to process the remaining files.',file=os.sys.stderr)
                 raise SystemExit(2)
+    if args.mode in ('consts','audit') and summaries:
+        summary_path=root/'SUMMARY.txt'
+        summary_path.write_text('\n'.join(summaries)+'\n',encoding='utf-8')
+        print(f'=== {args.mode} summary ===')
+        for s in summaries:
+            print(s)
+        print(f'Summary: {summary_path}')
     print(f'Processed: {ok}  Failed: {bad}  Output directory: {root}')
     if bad:raise SystemExit(2)
 if __name__=='__main__':main()
