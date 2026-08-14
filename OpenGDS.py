@@ -1,568 +1,439 @@
 #!/usr/bin/env python3
-"""
-OpenGDS v1.0 — Godot 4.6.x .gdc decompiler, disassembler & security auditor
-Author : ABDO10_DZ / 0xbytecode
+"""OpenGDS / OGDS                                 GDSC inspector/decompiler for the supplied Godot 4.x GDSC v101 corpus.                                                                                Usage:                                              python3 OpenGDS.py dcmp <file-or-folder>          python3 OpenGDS.py hexdump <file-or-folder>       python3 OpenGDS.py consts <file-or-folder>        python3 OpenGDS.py audit <file-or-folder>         python3 OpenGDS.py disasm <file-or-folder>                                                        Folders are processed recursively. For folder input, generated artifacts are                        written under <folder>.<mode>/ by default. Use --outdir to choose another root.                     """                                               from __future__ import annotations
+import argparse, json, math, os, re, struct, subprocess, tempfile, zipfile                          from dataclasses import dataclass                 from pathlib import Path                          from typing import Iterable                       
+TOK = [
+"EMPTY","ANNOTATION","IDENTIFIER","LITERAL","LESS","LESS_EQUAL","GREATER","GREATER_EQUAL","EQUAL_EQUAL","BANG_EQUAL",
+"AND","OR","NOT","AMPERSAND_AMPERSAND","PIPE_PIPE","BANG","AMPERSAND","PIPE","TILDE","CARET","LESS_LESS","GREATER_GREATER",
+"PLUS","MINUS","STAR","STAR_STAR","SLASH","PERCENT","EQUAL","PLUS_EQUAL","MINUS_EQUAL","STAR_EQUAL","STAR_STAR_EQUAL",
+"SLASH_EQUAL","PERCENT_EQUAL","LESS_LESS_EQUAL","GREATER_GREATER_EQUAL","AMPERSAND_EQUAL","PIPE_EQUAL","CARET_EQUAL",
+"IF","ELIF","ELSE","FOR","WHILE","BREAK","CONTINUE","PASS","RETURN","MATCH","WHEN","AS","ASSERT","AWAIT","BREAKPOINT",
+"CLASS","CLASS_NAME","CONST","ENUM","EXTENDS","FUNC","IN","IS","NAMESPACE","PRELOAD","SELF","SIGNAL","STATIC","SUPER","TRAIT","VAR","VOID","YIELD",
+"BRACKET_OPEN","BRACKET_CLOSE","BRACE_OPEN","BRACE_CLOSE","PARENTHESIS_OPEN","PARENTHESIS_CLOSE","COMMA","SEMICOLON","PERIOD","PERIOD_PERIOD","QUESTION_MARK",
+"COLON","DOLLAR","FORWARD_ARROW","UNDERSCORE","NEWLINE","INDENT","DEDENT","CONST_PI","CONST_TAU","CONST_INF","CONST_NAN",
+"VCS_CONFLICT_MARKER","BACKTICK","ERROR","TK_EOF"]
+PUNCT={
+"BRACKET_OPEN":"[","BRACKET_CLOSE":"]","BRACE_OPEN":"{","BRACE_CLOSE":"}","PARENTHESIS_OPEN":"(","PARENTHESIS_CLOSE":")","COMMA":",","SEMICOLON":";","PERIOD":".","PERIOD_PERIOD":"..","COLON":":","DOLLAR":"$","FORWARD_ARROW":"->","UNDERSCORE":"_",
+"LESS":"<","LESS_EQUAL":"<=","GREATER":">","GREATER_EQUAL":">=","EQUAL_EQUAL":"==","BANG_EQUAL":"!=","AND":"and","OR":"or","NOT":"not","AMPERSAND":"&","PIPE":"|","TILDE":"~","CARET":"^","LESS_LESS":"<<","GREATER_GREATER":">>","PLUS":"+","MINUS":"-","STAR":"*","STAR_STAR":"**","SLASH":"/","PERCENT":"%","EQUAL":"=","PLUS_EQUAL":"+=","MINUS_EQUAL":"-=","STAR_EQUAL":"*=","STAR_STAR_EQUAL":"**=","SLASH_EQUAL":"/=","PERCENT_EQUAL":"%=","LESS_LESS_EQUAL":"<<=","GREATER_GREATER_EQUAL":">>=","AMPERSAND_EQUAL":"&=","PIPE_EQUAL":"|=","CARET_EQUAL":"^=","AMPERSAND_AMPERSAND":"&&","PIPE_PIPE":"||","BANG":"!","QUESTION_MARK":"?","CONST_PI":"PI","CONST_TAU":"TAU","CONST_INF":"INF","CONST_NAN":"NAN"}
+KEYWORDS={k:k.lower() for k in ["IF","ELIF","ELSE","FOR","WHILE","BREAK","CONTINUE","PASS","RETURN","MATCH","WHEN","AS","ASSERT","AWAIT","BREAKPOINT","CLASS","CLASS_NAME","CONST","ENUM","EXTENDS","FUNC","IN","IS","NAMESPACE","PRELOAD","SELF","SIGNAL","STATIC","SUPER","TRAIT","VAR","VOID","YIELD"]}
+@dataclass
+class Token:
+    index:int; typ:int; arg:int; line:int; column:int|None
 
-Features:
-  - Full GDScript source reconstruction (class structure + function bodies)
-  - Per‑function register mapping fixes garbled variable names
-  - Explicit function name detection from FUNC_ENTRY opcodes
-  - Disassembler, batch scanner, and security auditor
-  - Runs on Termux (Android), Linux, Windows, macOS
+def u32(b,p): return struct.unpack_from('<I',b,p)[0]
 
-Usage:
-  python3 opengds.py source   <file.gdc>
-  python3 opengds.py disasm   <file.gdc>
-  python3 opengds.py ids      <file.gdc>
-  python3 opengds.py consts   <file.gdc>
-  python3 opengds.py info     <file.gdc>
-  python3 opengds.py batch    <directory>
-  python3 opengds.py audit    <directory>
-  under MIT LICENSE.
-"""
+def read_variant(b,p):
+    header=u32(b,p); p+=4; typ=header&0xff; flags=(header>>16)&0xff
+    if typ==0:return None,p
+    if typ==1:return bool(u32(b,p)),p+4
+    if typ==2:
+        if flags&1:return struct.unpack_from('<q',b,p)[0],p+8
+        return struct.unpack_from('<i',b,p)[0],p+4
+    if typ==3:
+        if flags&1:return struct.unpack_from('<d',b,p)[0],p+8
+        return struct.unpack_from('<f',b,p)[0],p+4
+    if typ in (4,21):
+        n=u32(b,p);p+=4;raw=b[p:p+n];s=raw.rstrip(b'\0').decode('utf-8','replace');p=(p+n+3)&~3
+        return (('STRINGNAME',s) if typ==21 else s),p
+    if typ==22:
+        nf=u32(b,p);p+=4;nc=nf&0x7fffffff;sf=u32(b,p);p+=4;sc=sf&0x7fffffff;absolute=bool(sf&0x80000000);p+=4
+        names=[]
+        for _ in range(nc+sc):
+            n=u32(b,p);p+=4;raw=b[p:p+n];p=(p+n+3)&~3;names.append(raw.rstrip(b'\0').decode('utf-8','replace'))
+        node='/'.join(names[:nc]); path=node+(':'+':'.join(names[nc:]) if sc else '')
+        if absolute and not path.startswith('/'):path='/'+path
+        elif not absolute:path='^'+path
+        return ('NODEPATH',path),p
+    raise ValueError(f'unsupported Variant type {typ} at 0x{p-4:x}')
 
-import sys, os, struct, ctypes, math, re
-from collections import defaultdict, Counter
+def decode_gdsc(data:bytes):
+    if data[:4]!=b'GDSC':raise ValueError('not GDSC')
+    version=u32(data,4)
+    if version != 101:
+        raise ValueError(f'unsupported GDSC version {version}; OpenGDS currently supports GDSC v101 (Godot 4.6.x/4.7.x compatible format)')
+    dec_size=u32(data,8);payload=data[12:]
+    if dec_size and len(payload)!=dec_size:
+        with tempfile.TemporaryDirectory() as td:
+            a=Path(td)/'in.zst';o=Path(td)/'out.bin';a.write_bytes(payload)
+            r=subprocess.run(['zstd','-q','-d','-f',str(a),'-o',str(o)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            if r.returncode:raise ValueError('zstd decompression failed: '+r.stderr.decode(errors='replace'))
+            raw=o.read_bytes()
+    else:raw=payload
+    if dec_size and len(raw)!=dec_size:raise ValueError('decompressed size mismatch')
+    if len(raw)<16:raise ValueError('short payload')
+    id_n,const_n,line_n,tok_n=struct.unpack_from('<4I',raw,0);p=16;ids=[]
+    for _ in range(id_n):
+        n=u32(raw,p);p+=4;chars=[]
+        for j in range(n):
+            x=bytes(c^0xB6 for c in raw[p+4*j:p+4*j+4]);chars.append(chr(struct.unpack('<I',x)[0]))
+        p+=4*n;ids.append(''.join(chars))
+    constants=[]
+    for _ in range(const_n):v,p=read_variant(raw,p);constants.append(v)
+    lm={}
+    for _ in range(line_n):i,line=struct.unpack_from('<II',raw,p);p+=8;lm[i]=line
+    cm={}
+    for _ in range(line_n):i,col=struct.unpack_from('<II',raw,p);p+=8;cm[i]=col
+    toks=[]
+    for i in range(tok_n):
+        word,line=struct.unpack_from('<II',raw,p);p+=8;typ=word&0x7f;arg=word>>8
+        if typ>=len(TOK):raise ValueError(f'invalid token type {typ} at {i}')
+        toks.append(Token(i,typ,arg,line,cm.get(i)))
+    if p!=len(raw):raise ValueError(f'trailing payload: {len(raw)-p} bytes')
+    return version,ids,constants,lm,cm,toks
 
-# ═══════════════════════════════════════════════════════════════
-#  zstd decompression
-# ═══════════════════════════════════════════════════════════════
-def _zstd():
-    for p in ("libzstd.so.1", "libzstd.so",
-              "/usr/lib/x86_64-linux-gnu/libzstd.so.1",
-              "/data/data/com.termux/files/usr/lib/libzstd.so",
-              "/data/data/com.termux/files/usr/lib/libzstd.so.1"):
-        try:
-            z = ctypes.CDLL(p)
-            z.ZSTD_decompress.restype = ctypes.c_size_t
-            z.ZSTD_decompress.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
-                                          ctypes.c_void_p, ctypes.c_size_t]
-            return z
-        except OSError:
-            pass
-    raise RuntimeError("libzstd not found – run: pkg install zstd")
-_Z = _zstd()
+def quote_string(s):return '"'+s.replace('\\','\\\\').replace('"','\\"').replace('\n','\\n')+'"'
 
-# ═══════════════════════════════════════════════════════════════
-#  GDC parser (Godot 4.6.x bytecode v101)
-# ═══════════════════════════════════════════════════════════════
-class GDC:
-    def __init__(self, path):
-        self.path = path  # <-- fixed missing attribute
-        raw = open(path, 'rb').read()
-        if raw[:4] != b'GDSC':
-            raise ValueError("Not a .gdc file")
-        self.ver, dec = struct.unpack_from('<II', raw, 4)
-        buf = ctypes.create_string_buffer(dec)
-        r = _Z.ZSTD_decompress(buf, dec, raw[12:], len(raw)-12)
-        pay = bytes(buf.raw[:r])
-        n = len(pay)//4
-        flt = list(struct.unpack(f'<{n}I', pay[:n*4]))
-        ic, cc, lc, tc = flt[:4]
-        self.ic = ic; self.cc = cc; self.lc = lc; self.tc = tc
-        pos = 4
-        self.ids, pos = _pids(flt, ic, pos)
-        self.consts, pos = _pcon(flt, cc, pos)
-        self.lmap, pos = _plm(flt, lc, pos)
-        self.bc = flt[pos:pos+tc]                  # class‑level bytecode
-        self.trailer = flt[pos+tc:]                # function‑body bytecode
-        # temporary global register map (will be overridden per function)
-        self.global_reg2id = {1+i: nm for i, nm in enumerate(self.ids)}
-        # pre‑compute function names from FUNC_ENTRY opcodes
-        self.func_names_set = self._build_func_names_set()
+def token_text(t,ids,constants):
+    n=TOK[t.typ]
+    if n in ('ANNOTATION','IDENTIFIER'):return ids[t.arg] if t.arg<len(ids) else f'<id:{t.arg}>'
+    if n=='LITERAL':
+        v=constants[t.arg] if t.arg<len(constants) else f'<const:{t.arg}>'
+        if isinstance(v,tuple) and v[0]=='STRINGNAME':return '&'+quote_string(v[1])
+        if isinstance(v,tuple) and v[0]=='NODEPATH':return '^'+quote_string(v[1][1:]) if v[1].startswith('^') else quote_string(v[1])
+        if isinstance(v,str):return quote_string(v)
+        if v is True:return 'true'
+        if v is False:return 'false'
+        if v is None:return 'null'
+        if isinstance(v,float) and math.isnan(v):return 'NAN'
+        return str(v)
+    if n in KEYWORDS:return KEYWORDS[n]
+    if n in PUNCT:return PUNCT[n]
+    if n in ('EMPTY','NEWLINE','INDENT','DEDENT','TK_EOF'):return ''
+    return '<error>' if n=='ERROR' else n.lower()
 
-    def _build_func_names_set(self):
-        """Return set of function names declared via FUNC_ENTRY opcodes in class bc."""
-        names = set()
-        bc = self.bc
-        for i in range(0, len(bc)-1, 2):
-            lo = bc[i] & 0xFF
-            reg = bc[i+1] if i+1 < len(bc) else 0
-            if lo in (0x07, 0xBA) and 0 < reg <= len(self.ids):
-                names.add(self.ids[reg-1])
-        return names
+def needs_space(prev,cur):
+    if not prev:return False
+    if cur in (')',']','}',',',';', '.', '..', ':'):return False
+    if prev in ('(','[','{','.', '..','$'):return False
+    if cur=='(':return prev in {'if','for','while','match','assert','await','return'}
+    if prev==',':return True
+    if prev==':' and cur=='=':return False
+    ops=(":=",":","=","+","-","*","/","%","==","!=","<",">","<=",">=","and","or","as","is","->","+=","-=","*=","/=","%=","**=","<<=",">>=","&=","|=","^=")
+    if prev in ops or cur in ops:return True
+    return (prev[-1:].isalnum() or prev[-1:] in '_"\'') and (cur[:1].isalnum() or cur[:1] in '_"\'@')
 
-    def build_func_regmap(self, func_start_pc, func_end_pc, params):
-        """
-        Scan the trailer for the first few LOAD_VAR instructions to map
-        parameter registers to names. Also detect STORE_VAR for local variables.
-        """
-        reg_map = {}
-        param_idx = 0
-        pc = func_start_pc
-        while pc + 1 < func_end_pc and param_idx < len(params):
-            op_tok = self.trailer[pc]
-            lo = op_tok & 0xFF
-            ext = op_tok >> 8
-            if lo == 0x82 and (ext & 7) == 0:  # LOAD_VAR
-                reg = self.trailer[pc+1] & 0xFF
-                reg_map[reg] = params[param_idx]
-                param_idx += 1
-            pc += 2
-        # scan further for STORE_VAR (0x88, 0xC2) to assign local names
-        for i in range(func_start_pc, func_end_pc-1, 2):
-            lo = self.trailer[i] & 0xFF
-            reg = self.trailer[i+1] & 0xFF
-            if lo in (0x88, 0xC2):
-                if reg not in reg_map:
-                    reg_map[reg] = self.global_reg2id.get(reg, f'_r{reg}')
-        return reg_map
+def _indent_unit(columns):
+    vals=sorted({c-1 for c in columns if c is not None and c > 1})
+    if not vals:
+        return 4
+    from math import gcd
+    g=0
+    for v in vals:
+        g=gcd(g,v)
+    return g if 1 <= g <= 8 else 4
 
-
-def _pids(f, n, p):
-    r = []
-    for _ in range(n):
-        l = f[p]; p += 1
-        r.append(''.join(chr((f[p+i] & 0xFF) ^ 0xB6) for i in range(l)))
-        p += l
-    return r, p
-
-def _pcon(f, n, p):
-    r = []
-    for _ in range(n):
-        t = f[p]; p += 1
-        if t == 0:   r.append(('nil', None))
-        elif t == 1: v = f[p]; p += 1; r.append(('bool', bool(v)))
-        elif t == 2:
-            v = f[p]; p += 1
-            if v >= 0x80000000: v -= 0x100000000
-            r.append(('int', v))
-        elif t == 3:
-            v = struct.unpack('<f', struct.pack('<I', f[p]))[0]; p += 1
-            r.append(('float', v))
-        elif t == 4:
-            l = f[p]; p += 1
-            b = b''.join(struct.pack('<I', f[p+i]) for i in range(math.ceil(l/4)))
-            v = b[:l].decode('utf-8', 'replace')
-            p += math.ceil(l/4)
-            r.append(('str', v))
-        else:
-            r.append((f't{t}', None)); p += 1
-    return r, p
-
-def _plm(f, n, p):
-    lm = {}
-    for _ in range(n):
-        pc = f[p]; p += 1; ln = f[p]; p += 1
-        lm[pc] = ln
-    return lm, p
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Identifier classification & class‑structure extraction
-# ═══════════════════════════════════════════════════════════════
-BUILTINS = {
-    'int','float','bool','String','Array','Dictionary','Vector2','Vector3',
-    'Vector2i','Vector3i','Color','Rect2','Transform2D','Transform3D',
-    'Basis','Quaternion','Plane','AABB','Object','Node','Node2D','Node3D',
-    'Control','Resource','RefCounted','Callable','Signal','StringName',
-    'RID','Variant','void','null','true','false','PackedStringArray',
-    'PackedByteArray','PackedInt32Array','PackedFloat32Array','NodePath',
-}
-
-def _cat(name):
-    if not name: return 'unknown'
-    if name in BUILTINS: return 'builtin'
-    if name.isupper() and '_' not in name: return 'enum_member'
-    if name.isupper() and '_' in name: return 'const'
-    if name[0].isupper(): return 'class_type'
-    # snake_case
-    if name.startswith('_') and len(name)>1: return 'func'
-    if '_' in name[1:] and name[0].islower(): return 'snake'
-    return 'name_ref'
-
-def parse_structure(g):
-    ids = g.ids
-    bc = g.bc
-    # class_name / extends
-    class_name = None
-    extends = None
-    # scan first few bc pairs for keywords (slot files won't have them)
-    for i in range(0, min(len(bc)-1, 40), 2):
-        lo = bc[i] & 0xFF
-        reg = bc[i+1] if i+1 < len(bc) else 0
-        nm = g.global_reg2id.get(reg)
-        if lo == 0xB5 and nm: class_name = nm
-        if lo == 0xBB and nm: extends = nm
-
-    # fallback: if no keyword, use first identifier as extends/class_name
-    if not extends and not class_name and ids:
-        if _cat(ids[0]) == 'class_type':
-            # check if very first bc pair is 0xBB (even in slot files)
-            if bc and (bc[0] & 0xFF) == 0xBB:
-                reg = bc[1] if len(bc)>1 else 0
-                extends = g.global_reg2id.get(reg, ids[0])
-            else:
-                class_name = ids[0]
-
-    # walk identifiers for signals, enums, consts, vars, funcs
-    signals = []
-    enums = []          # [(name, [members])]
-    consts_nm = []
-    vars_nm = []
-    funcs = []          # [(name, is_static)]
-
-    claimed = set(x for x in (class_name, extends) if x)
-    in_enum = False; enum_name = None; enum_mems = []
-    is_static = False
-    i = 0
-    while i < len(ids):
-        nm = ids[i]
-        if nm in claimed:
-            i += 1; continue
-        cat = _cat(nm)
-        if cat == 'builtin':
-            i += 1; continue
-        if cat == 'class_type':
-            # check if next ids are enum members → it's an enum name
-            nxt = [_cat(ids[j]) for j in range(i+1, min(i+4, len(ids)))]
-            if 'enum_member' in nxt:
-                if in_enum and enum_mems:
-                    enums.append((enum_name or '?', list(enum_mems)))
-                enum_name = nm; enum_mems = []; in_enum = True
-            i += 1; continue
-        if cat == 'enum_member':
-            if in_enum:
-                enum_mems.append(nm)
-            i += 1; continue
-        else:
-            if in_enum and enum_mems:
-                enums.append((enum_name or '?', list(enum_mems)))
-                in_enum = False; enum_name = None; enum_mems = []
-        if cat == 'const':
-            consts_nm.append(nm); i += 1; continue
-        if cat == 'func':
-            funcs.append((nm, is_static)); is_static = False; i += 1; continue
-        if cat == 'snake':
-            # function definition or parameter? use FUNC_ENTRY set to decide
-            if nm in g.func_names_set:
-                funcs.append((nm, is_static)); is_static = False
-            # else: it's a parameter or local – skip
-            i += 1; continue
-        i += 1
-
-    if in_enum and enum_mems:
-        enums.append((enum_name or '?', list(enum_mems)))
-    return class_name, extends, signals, enums, consts_nm, vars_nm, funcs
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Function‑body reconstruction helpers
-# ═══════════════════════════════════════════════════════════════
-def _get_line_groups(g):
-    lm = g.lmap
-    bc = g.bc
-    pcs = sorted(lm.keys())
-    groups = []
-    for idx, pc in enumerate(pcs):
-        ln = lm[pc]
-        end = pcs[idx+1] if idx+1 < len(pcs) else len(bc)
-        groups.append((ln, bc[pc:end]))
-    return groups
-
-# keywords that appear in expression/statement contexts
-KW_EXPR = {
-    0xBE: 'if', 0xB8: 'elif', 0xB9: 'else:', 0xBC: 'for', 0xCC: 'while',
-    0xC1: 'match', 0xC4: 'return', 0xC2: 'pass', 0xBF: 'in',
-}
-
-def _refs_in_toks(toks, reg_map, g):
-    kws = []
-    names = []
-    cvals = []
-    for tok in toks:
-        lo = tok & 0xFF
-        ext = tok >> 8
-        if lo in KW_EXPR:
-            kws.append(KW_EXPR[lo])
-        nm = reg_map.get(tok) or g.global_reg2id.get(tok)
-        if nm and nm not in names:
-            names.append(nm)
-        # constant load detection
-        if lo == 0xD1 and ext < len(g.consts):
-            cvals.append(g.consts[ext][1])
-        if lo == 0x82 and (ext & 7) == 1:
-            slot = ext >> 3
-            if slot < len(g.consts):
-                cvals.append(g.consts[slot][1])
-    return kws, names, cvals
-
-def _reconstruct_stmt(toks, reg_map, g):
-    if not toks: return ''
-    kws, names, cvals = _refs_in_toks(toks, reg_map, g)
-    if 'return' in kws:
-        if cvals: return f'return {_fmtc(cvals[0])}'
-        if names: return f'return {".".join(names[:3])}'
-        return 'return'
-    if 'if' in kws:   return f'if {_build_cond(names, toks, g)}:'
-    if 'elif' in kws: return f'elif {_build_cond(names, toks, g)}:'
-    if 'else:' in kws: return 'else:'
-    if 'match' in kws:
-        subj = names[0] if names else '_'
-        return f'match {subj}:'
-    if 'for' in kws:
-        return (f'for {names[0]} in {names[1]}:' if len(names)>=2 else 'for _:')
-    if 'while' in kws: return f'while {_build_cond(names, toks, g)}:'
-    if 'pass' in kws: return 'pass'
-    if 'in' in kws and names:
-        return f'if {names[0]} in {names[1]}:' if len(names)>=2 else f'if _ in {names[0]}:'
-    if names:
-        if cvals:
-            rhs = ', '.join(_fmtc(v) for v in cvals[:2])
-            return f'{names[0]} = {rhs}'
-        if len(names) == 1: return names[0]
-        if len(names) == 2: return f'{names[0]}.{names[1]}()'
-        return f'{names[0]}.{names[1]}({", ".join(names[2:])})'
-    if cvals: return _fmtc(cvals[0])
-    return f' # {[hex(t) for t in toks[:6]]}'
-
-def _fmtc(v):
-    return repr(v) if isinstance(v, str) else str(v)
-
-def _build_cond(names, toks, g):
-    if not names: return 'true'
-    if len(names) == 1: return names[0]
-    if len(names) == 2:
-        for tok in toks:
-            if (tok & 0xFF) == 0x2F: return f'{names[0]} == {names[1]}'
-            if (tok & 0xFF) == 0x30: return f'{names[0]} != {names[1]}'
-        return f'{names[0]}.{names[1]}()'
-    return f'{names[0]}.{names[1]}({", ".join(names[2:])})'
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Full source reconstruction
-# ═══════════════════════════════════════════════════════════════
-def reconstruct(g):
-    cn, ext, sigs, enums, consts_nm, vars_nm, funcs = parse_structure(g)
-    ids = g.ids
-    con = g.consts
-    out = []
-
-    # header
-    if cn: out.append(f'class_name {cn}')
-    if ext: out.append(f'extends {ext}')
-    if cn or ext: out.append('')
-
-    # signals
-    for sig in sigs: out.append(f'signal {sig}')
-    if sigs: out.append('')
-
-    # enums
-    for en, members in enums:
-        out.append(f'enum {en} {{')
-        for m in members: out.append(f'\t{m},')
-        out.append('}')
-        out.append('')
-
-    # vars
-    for vn in vars_nm: out.append(f'var {vn}')
-    if vars_nm: out.append('')
-
-    # constants
-    int_vals   = [v for t,v in con if t=='int']
-    float_vals = [v for t,v in con if t=='float']
-    str_vals   = [v for t,v in con if t=='str']
-    ci = 0
-    for cname in consts_nm:
-        if any(kw in cname for kw in ('SEC','DURATION','TIMEOUT','INTERVAL','DELAY','ALPHA','SPEED')):
-            val = float_vals[0] if float_vals else '...'
-            out.append(f'const {cname}: float = {val}')
-        elif int_vals and ci < len(int_vals):
-            out.append(f'const {cname} = {int_vals[ci]}'); ci += 1
-        else:
-            out.append(f'const {cname} = ...')
-    if consts_nm: out.append('')
-
-    # Line groups (from class‑level bc only, for fallback)
-    groups = _get_line_groups(g)
-    ln2toks = {ln: toks for ln, toks in groups}
-    src_lns = sorted(ln2toks.keys())
-
-    # Partition source lines among functions
-    nfuncs = len(funcs)
-    if nfuncs and src_lns:
-        chunk = max(1, len(src_lns)//nfuncs)
-        fn_chunks = []
-        for fi in range(nfuncs):
-            s = fi*chunk
-            e = (fi+1)*chunk if fi+1 < nfuncs else len(src_lns)
-            fn_chunks.append(src_lns[s:e])
-    else:
-        fn_chunks = [[]]*nfuncs
-
-    # Build per‑function parameter lists from identifier order
-    func_names_list = [f[0] for f in funcs]
-    fn_params = {}
-    for fi, (fname, _) in enumerate(funcs):
-        idx = next((i for i,n in enumerate(ids) if n==fname), -1)
-        nxt_idx = len(ids)
-        if fi+1 < nfuncs and func_names_list[fi+1] in ids:
-            nxt_idx = ids.index(func_names_list[fi+1])
-        elif fi+1 < nfuncs:
-            # fallback: use next function name if found later
-            for j in range(fi+1, nfuncs):
-                if func_names_list[j] in ids:
-                    nxt_idx = ids.index(func_names_list[j])
-                    break
-        params = []; types = []
-        if idx >= 0:
-            for j in range(idx+1, nxt_idx):
-                nm = ids[j]; c = _cat(nm)
-                if c == 'builtin': types.append(nm)
-                elif c == 'class_type': types.append(nm)
-                elif c in ('snake','func') and nm not in func_names_list:
-                    params.append(nm)
-        fn_params[fname] = (params[:6], types[:4])
-
-    # Decompile each function
-    for fi, (fname, is_static) in enumerate(funcs):
-        params, types = fn_params.get(fname, ([], []))
-        static_kw = 'static ' if is_static else ''
-        # signature
-        type_iter = iter(types)
-        psig = []
-        for p in params:
-            try: th = next(type_iter); psig.append(f'{p}: {th}')
-            except StopIteration: psig.append(p)
-        ret = ''
-        leftover = [t for t in types if t not in params]
-        if leftover: ret = f' -> {leftover[-1]}'
-        out.append(f'{static_kw}func {fname}({", ".join(psig)}){ret}:')
-
-        fn_lns = fn_chunks[fi] if fi < len(fn_chunks) else []
-        if not fn_lns:
-            out.append('\tpass')
-        else:
-            reg_map = dict(g.global_reg2id)   # simplified – will be improved later
-            indent = 1
-            for ln in fn_lns:
-                toks = ln2toks.get(ln, [])
-                text = _reconstruct_stmt(toks, reg_map, g)
-                if not text: continue
-                lower = text.strip()
-                if lower.startswith(('else:', 'elif ')):
-                    indent = max(1, indent-1)
-                out.append('\t'*indent + text)
-                if lower.endswith(':') and not lower.startswith('#'):
-                    indent += 1
-                elif lower.startswith(('return','break','continue','pass')):
-                    indent = max(1, indent-1)
-        out.append('')
-
-    if not funcs and str_vals:
-        out.append('# String constants:')
-        for v in str_vals[:20]:
-            out.append(f'# {v!r}')
-    return '\n'.join(out)
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Disassembler
-# ═══════════════════════════════════════════════════════════════
-def cmd_disasm(g):
-    bc = g.bc
-    lm = g.lmap
-    print(f'; {os.path.basename(g.path)}  bc={len(bc)} trailer={len(g.trailer)}')
-    print(f'; IDs: {g.ids[:8]}{"..." if len(g.ids)>8 else ""}')
-    for i in range(0, len(bc)-1, 2):
-        op = bc[i]; reg = bc[i+1]
-        lo = op & 0xFF; ext = op >> 8
-        nm = g.global_reg2id.get(reg, f'reg{reg}')
-        lt = f' ; line {lm[i]}' if i in lm else (f' ; line {lm[i+1]}' if i+1 in lm else '')
-        print(f' {i:4d}: op=0x{op:06x}(lo=0x{lo:02x} ext={ext:3d}) reg=0x{reg:04x}({nm}){lt}')
-    if g.trailer:
-        print(f'\n; TRAILER ({len(g.trailer)} tokens)')
-        for i in range(0, min(len(g.trailer)-1, 60), 2):
-            reg = g.trailer[i]; op = g.trailer[i+1]
-            nm = g.global_reg2id.get(reg, f'reg{reg}')
-            print(f' {i:4d}: reg=0x{reg:04x}({nm}) op=0x{op:06x}')
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Batch scanner & security audit
-# ═══════════════════════════════════════════════════════════════
-def _gdcs(root):
-    for d,_,fs in os.walk(root):
-        for f in fs:
-            if f.endswith('.gdc'): yield os.path.join(d,f)
-
-def cmd_batch(root):
-    idf = Counter(); strf = Counter(); ok = fail = 0
-    for path in _gdcs(root):
-        try:
-            g = GDC(path)
-            for n in g.ids: idf[n] += 1
-            for t,v in g.consts:
-                if t=='str' and v: strf[v] += 1
-            ok += 1
-        except: fail += 1
-    print(f'Parsed {ok}/{ok+fail} IDs:{len(idf)} Strings:{len(strf)}')
-    print('\nTop 30 identifiers:')
-    for n,c in idf.most_common(30): print(f' {n!r:42} {c}')
-    print(f'\nAll string constants ({len(strf)}):')
-    for v,c in sorted(strf.items(), key=lambda x:-x[1]):
-        print(f' [{c:3d}x] {v[:90]!r}')
-
-def cmd_audit(root):
-    PAT = {
-        'server_url': re.compile(r'https?://|wss?://', re.I),
-        'ip_address': re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'),
-        'api_key': re.compile(r'key|secret|token|auth', re.I),
-        'hardcoded_pw': re.compile(r'password|passwd', re.I),
-        'dev_flag': re.compile(r'debug|dev|staging|localhost|127\.0\.0\.1', re.I),
+def _needs_backslash(prev_text, next_first, nesting):
+    """Whether a physical source-line break must use GDScript's \\ continuation."""
+    if nesting > 0:
+        return False
+    if not prev_text:
+        return False
+    # A block header ends the line naturally.
+    if prev_text.endswith(':'):
+        return False
+    # Tokens that cannot legally terminate an expression.
+    continuation_ends = {
+        '=', ':=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=',
+        '&=', '|=', '^=', '+', '-', '*', '/', '%', '**',
+        '==', '!=', '<', '>', '<=', '>=', 'and', 'or', 'in', 'is', 'as',
+        '.', '..', ',', '->', '?'
     }
-    finds = defaultdict(list)
-    for path in _gdcs(root):
-        try:
-            g = GDC(path); rel = os.path.relpath(path, root)
-            for t,v in g.consts:
-                if t!='str' or not v: continue
-                for cat,rx in PAT.items():
-                    if rx.search(v): finds[cat].append((rel, v))
-        except: pass
-    print('╔══════ OpenGDS v1.0 Security Audit ══════╗')
-    for cat,items in sorted(finds.items()):
-        print(f'\n[{cat.upper()}] ({len(items)} findings)')
-        seen = set()
-        for rel,val in items:
-            k = f'{rel}:{val[:60]}'
-            if k in seen: continue
-            seen.add(k)
-            print(f' {os.path.basename(rel):<35} {val[:70]!r}')
+    if prev_text in continuation_ends:
+        return True
+    # A next token that clearly continues an expression.
+    if next_first in ('.', '[', '(', ')', ']', '}', ',', 'and', 'or', 'in', 'is', 'as'):
+        return False
+    return False
 
+def reconstruct(ids,constants,line_map,tokens):
+    """
+    Reconstruct from the compiler's token line/column metadata.
 
-# ═══════════════════════════════════════════════════════════════
-#  CLI
-# ═══════════════════════════════════════════════════════════════
-def main():
-    if len(sys.argv) < 3:
-        print(__doc__)
-        sys.exit(1)
-    cmd, arg = sys.argv[1], sys.argv[2]
-    if cmd == 'batch': cmd_batch(arg); return
-    if cmd == 'audit': cmd_audit(arg); return
+    Important:
+      * token.line is the authoritative source line
+      * token.column is a 1-based character column for the first token on a line
+      * columns cannot distinguish tabs from spaces, so indentation depth is
+        reconstructed from the smallest common column step and emitted as tabs
+      * physical line continuations are restored only when the expression
+        requires a backslash; lines inside (), [], {} do not need one.
+    """
+    rows=[]
+    cur_line=None
+    parts=[]
+    prev=''
+    nesting=0
+    first_col=None
+    skip_equal=False
+    line_first_text=''
+    line_last_text=''
+    line_nesting_start=0
+    nodepath=False
 
-    g = GDC(arg)
-    if cmd == 'source':
-        print(reconstruct(g))
-    elif cmd == 'disasm':
-        cmd_disasm(g)
-    elif cmd == 'ids':
-        for i,n in enumerate(g.ids):
-            print(f' [{i:03d}] reg={1+i:<4} {n}')
-    elif cmd == 'consts':
-        for i,(t,v) in enumerate(g.consts):
-            print(f' [{i:03d}] {t:<8} {v!r}')
-    elif cmd == 'info':
-        print(f'File: {arg}')
-        print(f'Version: {g.ver}  IDs:{g.ic}  Consts:{g.cc}  Lines:{g.lc}  BC:{g.tc}  Trailer:{len(g.trailer)}')
-        cn, ext, _, _, _, _, funcs = parse_structure(g)
-        if cn: print(f'Class: {cn}')
-        if ext: print(f'Extends: {ext}')
-        if funcs: print(f'Functions: {len(funcs)} ({", ".join(f[0] for f in funcs[:8])})')
+    def flush(next_first=None, next_line=None):
+        nonlocal parts,prev,nesting,cur_line,first_col,line_first_text,line_last_text,line_nesting_start
+        if cur_line is None:
+            return
+        text=''.join(parts).rstrip()
+        rows.append({
+            'line':cur_line,
+            'text':text,
+            'col':first_col,
+            'last':line_last_text,
+            'nesting':line_nesting_start,
+            'next_first':next_first,
+        })
+        parts=[];prev='';first_col=None;line_first_text='';line_last_text=''
+
+    for pos,t in enumerate(tokens):
+        n=TOK[t.typ]
+        if n in ('NEWLINE','INDENT','DEDENT','TK_EOF'):
+            continue
+
+        # Some GDSC revisions lose/flatten token line numbers for statements
+        # that follow a block header. Recover the boundary from GDScript syntax.
+        if cur_line is not None and t.line == cur_line and nesting == 0 and parts:
+            prev_name = TOK[tokens[pos-1].typ] if pos else ''
+            current_text = ''.join(parts).rstrip()
+            statement_start = n in (
+                'IF','ELIF','ELSE','FOR','WHILE','MATCH','VAR','CONST','SIGNAL',
+                'RETURN','BREAK','CONTINUE','FUNC','CLASS_NAME','ANNOTATION'
+            )
+            bare_expr_start = n == 'IDENTIFIER' and prev_name in (
+                'PARENTHESIS_CLOSE','IDENTIFIER','LITERAL'
+            )
+            if (current_text.endswith(':') and statement_start) or bare_expr_start:
+                flush()
+                cur_line=t.line
+                line_nesting_start=nesting
+
+        # Detect a source line transition before consuming this token.
+        if cur_line is None:
+            cur_line=t.line
+            line_nesting_start=nesting
+        elif t.line != cur_line:
+            # We know the first token of the new source line now.
+            next_text=token_text(t,ids,constants)
+            flush(next_text,t.line)
+            cur_line=t.line
+            line_nesting_start=nesting
+
+        if first_col is None and t.column is not None:
+            first_col=t.column
+
+        # := is represented by COLON + EQUAL in this GDSC token stream.
+        if n=='COLON' and pos+1<len(tokens) and TOK[tokens[pos+1].typ]=='EQUAL':
+            st=':='
+            skip_equal=True
+        elif skip_equal and n=='EQUAL':
+            skip_equal=False
+            continue
+        else:
+            skip_equal=False
+            st=token_text(t,ids,constants)
+
+        if not st:
+            continue
+
+        # `$Foo/Bar` is a NodePath: slash is part of the path, not division.
+        # Keep NodePath mode through every identifier/path separator; leave it
+        # only when a real operator/keyword follows (e.g. `as Type`).
+        if st == '$':
+            if prev in (':=', '=', '+=', '-=', '*=', '/=', '%=', '**='):
+                parts.append(' ')
+            nodepath=True
+        elif nodepath and (st == '/' or n == 'IDENTIFIER'):
+            pass
+        elif nodepath:
+            if needs_space(prev, st):
+                parts.append(' ')
+            nodepath=False
+        elif needs_space(prev,st):
+            parts.append(' ')
+        parts.append(st)
+        prev=st
+        line_last_text=st
+        if not line_first_text:
+            line_first_text=st
+
+        if st in ('(', '[', '{'):
+            nesting += 1
+        elif st in (')', ']', '}'):
+            nesting=max(0,nesting-1)
+
+    flush()
+    if not rows:
+        return ''
+
+    # Infer indentation depth from source columns.
+    unit=_indent_unit([r['col'] for r in rows])
+    out=[]
+    previous_line=None
+
+    for i,r in enumerate(rows):
+        line=r['line']
+        if previous_line is not None and line > previous_line+1:
+            out.extend(['']*(line-previous_line-1))
+
+        col=r['col'] or 1
+        depth=max(0,(col-1)//unit)
+        text=r['text']
+
+        # A token line with no column is often an explicit continuation.
+        # Its indentation is derived from the owning statement.
+        is_continuation = (
+            i > 0 and rows[i-1]['line'] == line-1 and
+            _needs_backslash(
+                rows[i-1]['last'],
+                text.lstrip().split(' ',1)[0] if text.strip() else '',
+                rows[i-1]['nesting']
+            )
+        )
+
+        if is_continuation:
+            prev_depth=max(0,((rows[i-1]['col'] or 1)-1)//unit)
+            # Conventional GDScript continuation indentation.
+            depth=prev_depth+2
+
+        # If this line starts an explicit continuation, append the backslash
+        # to the PREVIOUS line, not to this line.
+        if i > 0 and rows[i-1]['line'] == line-1 and _needs_backslash(
+                rows[i-1]['last'],
+                text.lstrip().split(' ',1)[0] if text.strip() else '',
+                rows[i-1]['nesting']):
+            if out and not out[-1].rstrip().endswith('\\'):
+                out[-1]=out[-1].rstrip()+' \\'
+
+        out.append('\t'*depth+text)
+        previous_line=line
+
+    return '\n'.join(out)+'\n'
+
+def decode_file(path):return decode_gdsc(Path(path).read_bytes())
+
+def iter_files(path, suffix='.gdc'):
+    p=Path(path)
+    if p.is_file():
+        if suffix and p.suffix.lower()!=suffix:return []
+        return [p]
+    if p.is_dir():return sorted(x for x in p.rglob('*') if x.is_file() and (not suffix or x.suffix.lower()==suffix))
+    raise FileNotFoundError(path)
+
+def fmt_const(v):
+    if isinstance(v,tuple):return f'{v[0]}: {v[1]!r}'
+    if isinstance(v,float):
+        if math.isnan(v):return 'NAN'
+        if math.isinf(v):return 'INF' if v>0 else '-INF'
+    return repr(v)
+
+def hexdump(data,width=16):
+    lines=[]
+    for off in range(0,len(data),width):
+        chunk=data[off:off+width];hx=' '.join(f'{x:02x}' for x in chunk);hx += '   '*(width-len(chunk));ascii_s=''.join(chr(x) if 32<=x<127 else '.' for x in chunk)
+        lines.append(f'{off:08x}  {hx[:width*3-1]:<{width*3-1}}  |{ascii_s}|')
+    return '\n'.join(lines)+'\n'
+
+def const_report(path,decoded):
+    version,ids,constants,lm,cm,toks=decoded
+    out=[f'FILE: {path}',f'GDSC version: {version}',f'Identifiers: {len(ids)}',f'Constants: {len(constants)}','']
+    for i,v in enumerate(constants):out.append(f'[{i:4}] {type(v).__name__:12} {fmt_const(v)}')
+    return '\n'.join(out)+'\n'
+
+def disasm_report(path,decoded):
+    version,ids,constants,lm,cm,toks=decoded
+    out=[f'FILE: {path}',f'GDSC version: {version}',f'Identifiers: {len(ids)}  Constants: {len(constants)}  Tokens: {len(toks)}','', 'INDEX  LINE COL  TYPE                   ARG     TEXT']
+    for t in toks:out.append(f'{t.index:5} {t.line:5} {str(t.column if t.column is not None else "-"):>3}  {TOK[t.typ]:22} {t.arg:7}  {token_text(t,ids,constants)!r}')
+    return '\n'.join(out)+'\n'
+
+SECRET_PATTERNS=[
+ ('private_key',re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----')),
+ ('jwt',re.compile(r'\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b')),
+ ('api_key_assignment',re.compile(r'(?i)\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\b\s*[:=]')),
+ ('aws_access_key',re.compile(r'\bAKIA[0-9A-Z]{16}\b')),
+ ('github_token',re.compile(r'\bgh[pousr]_[A-Za-z0-9_]{20,}\b')),
+ ('generic_secret_assignment',re.compile(r'(?i)\b(?:secret|token|credential|key)\b\s*[:=]\s*["\'][^"\']{8,}["\']')),
+]
+URL_RE=re.compile(r'https?://[^\s"\']+')
+
+def audit_report(path,decoded):
+    version,ids,constants,lm,cm,toks=decoded
+    findings=[]
+    for i,v in enumerate(constants):
+        if isinstance(v,tuple):s=str(v[1])
+        elif isinstance(v,str):s=v
+        else:continue
+        for name,rx in SECRET_PATTERNS:
+            m=rx.search(s)
+            if m:
+                # Never print the matched credential/token material. Report only its type and location.
+                findings.append((name,'constant',i,'<redacted>'))
+        for m in URL_RE.finditer(s):
+            scheme=m.group(0).split(':',1)[0].lower();severity='info'
+            if scheme=='http':severity='medium'
+            findings.append(('url',severity,i,m.group(0)))
+    text='\n'.join(token_text(t,ids,constants) for t in toks)
+    if re.search(r'(?i)\b(?:OS\.execute|OS\.shell_open|JavaScriptBridge|load_string|ResourceLoader\.load)\b',text):
+        findings.append(('dynamic_execution','info','tokens','Potentially security-sensitive dynamic/external execution API reference'))
+    out=[f'FILE: {path}',f'GDSC version: {version}',f'Constants scanned: {len(constants)}',f'Tokens scanned: {len(toks)}','']
+    if not findings:out.append('RESULT: No high-confidence hard-coded secret patterns or suspicious URLs detected.')
     else:
-        print(f'Unknown: {cmd}')
+        sev_order={'critical':0,'high':1,'medium':2,'info':3,'constant':4}
+        out.append(f'FINDINGS: {len(findings)}')
+        for kind,where,idx,detail in sorted(findings,key=lambda x:sev_order.get(x[1],9) if x[1] in sev_order else 9):
+            if kind=='url':out.append(f'- URL [{where}] constant[{idx}]: {detail}')
+            elif kind=='dynamic_execution':out.append(f'- DYNAMIC_EXECUTION [{where}]: {detail}')
+            else:out.append(f'- POSSIBLE_SECRET [{kind}] constant[{idx}]: {detail}')
+    out.append('NOTE: Audit is heuristic/static; absence of findings is not proof of security.')
+    return '\n'.join(out)+'\n'
 
-if __name__ == '__main__':
-    main()
+def process_one(mode,path,stdout=False):
+    decoded=decode_file(path)
+    if mode=='dcmp':return reconstruct(decoded[1],decoded[2],decoded[3],decoded[5])
+    if mode=='hexdump':return hexdump(Path(path).read_bytes())
+    if mode=='consts':return const_report(path,decoded)
+    if mode=='disasm':return disasm_report(path,decoded)
+    if mode=='audit':return audit_report(path,decoded)
+    raise ValueError(mode)
+
+def main():
+    ap=argparse.ArgumentParser(prog='OpenGDS.py')
+    ap.add_argument('mode',choices=['dcmp','hexdump','audit','consts','disasm'])
+    ap.add_argument('path')
+    ap.add_argument('-o','--output',help='output file for single-file input, or output root for folder input')
+    ap.add_argument('--outdir',help='output root for folder input')
+    ap.add_argument('--continue-on-error',action='store_true',help='continue recursive processing after a bad GDC')
+    args=ap.parse_args()
+    p=Path(args.path)
+    files=iter_files(p)
+    if not files:
+        raise SystemExit(f'No .gdc files found: {p}')
+    is_folder=p.is_dir()
+    if not is_folder:
+        try:result=process_one(args.mode,p)
+        except Exception as e:
+            raise SystemExit(f'ERROR: {p}: {e}')
+        if args.output:Path(args.output).write_text(result,encoding='utf-8')
+        else:print(result,end='')
+        return
+    root=Path(args.outdir or args.output) if (args.outdir or args.output) else Path(str(p)+'.'+args.mode)
+    root.mkdir(parents=True,exist_ok=True)
+    base=p.resolve()
+    ok=bad=0
+    for f in files:
+        try:
+            result=process_one(args.mode,f)
+            rel=f.resolve().relative_to(base)
+            ext='.gd' if args.mode=='dcmp' else ('.hex' if args.mode=='hexdump' else f'.{args.mode}.txt')
+            dest=root/rel
+            dest=dest.with_suffix(ext)
+            dest.parent.mkdir(parents=True,exist_ok=True)
+            dest.write_text(result,encoding='utf-8')
+            ok+=1
+            print(f'[OK] {f} -> {dest}')
+        except Exception as e:
+            bad+=1
+            print(f'[ERROR] {f}: {e}',file=os.sys.stderr)
+            if not args.continue_on_error:
+                print('Stopped. Use --continue-on-error to process the remaining files.',file=os.sys.stderr)
+                raise SystemExit(2)
+    print(f'Processed: {ok}  Failed: {bad}  Output directory: {root}')
+    if bad:raise SystemExit(2)
+if __name__=='__main__':main()
