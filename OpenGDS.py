@@ -227,7 +227,14 @@ def reconstruct(ids,constants,line_map,tokens):
             bare_expr_start = n == 'IDENTIFIER' and prev_name in (
                 'PARENTHESIS_CLOSE','IDENTIFIER','LITERAL'
             )
-            if (current_text.endswith(':') and statement_start) or bare_expr_start:
+            same_line_else_if = (
+                n == 'IF'
+                and re.sub(r'\s+', '', current_text).endswith('else:')
+            )
+            if (
+                (current_text.endswith(':') and statement_start and not same_line_else_if)
+                or bare_expr_start
+            ):
                 flush()
                 cur_line=t.line
                 line_nesting_start=nesting
