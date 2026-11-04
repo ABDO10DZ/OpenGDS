@@ -3,17 +3,20 @@
 GDSC inspector/decompiler for the supplied Godot 4.x GDSC v101 corpus.
 
 Usage:
+  python3 OpenGDS.py info <file-or-folder>
+  python3 OpenGDS.py comp <file-or-folder> [--no-compress]
   python3 OpenGDS.py dcmp <file-or-folder>
   python3 OpenGDS.py hexdump <file-or-folder>
   python3 OpenGDS.py consts <file-or-folder>
   python3 OpenGDS.py audit <file-or-folder>
   python3 OpenGDS.py disasm <file-or-folder>
 
-Folders are processed recursively. For folder input, generated artifacts are
-written under <folder>.<mode>/ by default. Use --outdir to choose another root.
+GDSC analysis modes accept .gdc files. comp accepts .gd files and uses
+a native Python port of Godot 4.5 GDSC v101 tokenization/serialization. Folder input is
+recursive. Folder outputs go under <folder>.<mode>/ by default.
 """
 from __future__ import annotations
-import argparse, json, math, os, re, struct, subprocess, tempfile, zipfile
+import argparse, ctypes, ctypes.util, hashlib, json, math, os, re, shutil, struct, subprocess, tempfile, zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -25,11 +28,11 @@ TOK = [
 "SLASH_EQUAL","PERCENT_EQUAL","LESS_LESS_EQUAL","GREATER_GREATER_EQUAL","AMPERSAND_EQUAL","PIPE_EQUAL","CARET_EQUAL",
 "IF","ELIF","ELSE","FOR","WHILE","BREAK","CONTINUE","PASS","RETURN","MATCH","WHEN","AS","ASSERT","AWAIT","BREAKPOINT",
 "CLASS","CLASS_NAME","CONST","ENUM","EXTENDS","FUNC","IN","IS","NAMESPACE","PRELOAD","SELF","SIGNAL","STATIC","SUPER","TRAIT","VAR","VOID","YIELD",
-"BRACKET_OPEN","BRACKET_CLOSE","BRACE_OPEN","BRACE_CLOSE","PARENTHESIS_OPEN","PARENTHESIS_CLOSE","COMMA","SEMICOLON","PERIOD","PERIOD_PERIOD","QUESTION_MARK",
+"BRACKET_OPEN","BRACKET_CLOSE","BRACE_OPEN","BRACE_CLOSE","PARENTHESIS_OPEN","PARENTHESIS_CLOSE","COMMA","SEMICOLON","PERIOD","PERIOD_PERIOD","PERIOD_PERIOD_PERIOD",
 "COLON","DOLLAR","FORWARD_ARROW","UNDERSCORE","NEWLINE","INDENT","DEDENT","CONST_PI","CONST_TAU","CONST_INF","CONST_NAN",
-"VCS_CONFLICT_MARKER","BACKTICK","ERROR","TK_EOF"]
+"VCS_CONFLICT_MARKER","BACKTICK","QUESTION_MARK","ERROR","TK_EOF"]
 PUNCT={
-"BRACKET_OPEN":"[","BRACKET_CLOSE":"]","BRACE_OPEN":"{","BRACE_CLOSE":"}","PARENTHESIS_OPEN":"(","PARENTHESIS_CLOSE":")","COMMA":",","SEMICOLON":";","PERIOD":".","PERIOD_PERIOD":"..","COLON":":","DOLLAR":"$","FORWARD_ARROW":"->","UNDERSCORE":"_",
+"BRACKET_OPEN":"[","BRACKET_CLOSE":"]","BRACE_OPEN":"{","BRACE_CLOSE":"}","PARENTHESIS_OPEN":"(","PARENTHESIS_CLOSE":")","COMMA":",","SEMICOLON":";","PERIOD":".","PERIOD_PERIOD":"..","PERIOD_PERIOD_PERIOD":"...","COLON":":","DOLLAR":"$","FORWARD_ARROW":"->","UNDERSCORE":"_",
 "LESS":"<","LESS_EQUAL":"<=","GREATER":">","GREATER_EQUAL":">=","EQUAL_EQUAL":"==","BANG_EQUAL":"!=","AND":"and","OR":"or","NOT":"not","AMPERSAND":"&","PIPE":"|","TILDE":"~","CARET":"^","LESS_LESS":"<<","GREATER_GREATER":">>","PLUS":"+","MINUS":"-","STAR":"*","STAR_STAR":"**","SLASH":"/","PERCENT":"%","EQUAL":"=","PLUS_EQUAL":"+=","MINUS_EQUAL":"-=","STAR_EQUAL":"*=","STAR_STAR_EQUAL":"**=","SLASH_EQUAL":"/=","PERCENT_EQUAL":"%=","LESS_LESS_EQUAL":"<<=","GREATER_GREATER_EQUAL":">>=","AMPERSAND_EQUAL":"&=","PIPE_EQUAL":"|=","CARET_EQUAL":"^=","AMPERSAND_AMPERSAND":"&&","PIPE_PIPE":"||","BANG":"!","QUESTION_MARK":"?","CONST_PI":"PI","CONST_TAU":"TAU","CONST_INF":"INF","CONST_NAN":"NAN"}
 KEYWORDS={k:k.lower() for k in ["IF","ELIF","ELSE","FOR","WHILE","BREAK","CONTINUE","PASS","RETURN","MATCH","WHEN","AS","ASSERT","AWAIT","BREAKPOINT","CLASS","CLASS_NAME","CONST","ENUM","EXTENDS","FUNC","IN","IS","NAMESPACE","PRELOAD","SELF","SIGNAL","STATIC","SUPER","TRAIT","VAR","VOID","YIELD"]}
 @dataclass
@@ -52,13 +55,18 @@ def read_variant(b,p):
         n=u32(b,p);p+=4;raw=b[p:p+n];s=raw.rstrip(b'\0').decode('utf-8','replace');p=(p+n+3)&~3
         return (('STRINGNAME',s) if typ==21 else s),p
     if typ==22:
-        nf=u32(b,p);p+=4;nc=nf&0x7fffffff;sf=u32(b,p);p+=4;sc=sf&0x7fffffff;absolute=bool(sf&0x80000000);p+=4
+        # Godot's current NodePath Variant layout is: name_count|0x80000000,
+        # subname_count, np_flags (bit 0 = absolute), then UTF-8 strings.
+        name_flags=u32(b,p);p+=4;nc=name_flags&0x7fffffff
+        sc=u32(b,p);p+=4
+        np_flags=u32(b,p);p+=4
+        absolute=bool(np_flags&1)
         names=[]
         for _ in range(nc+sc):
-            n=u32(b,p);p+=4;raw=b[p:p+n];p=(p+n+3)&~3;names.append(raw.rstrip(b'\0').decode('utf-8','replace'))
+            n=u32(b,p);p+=4;raw=b[p:p+n];p=(p+n+3)&~3
+            names.append(raw.rstrip(b'\0').decode('utf-8','replace'))
         node='/'.join(names[:nc]); path=node+(':'+':'.join(names[nc:]) if sc else '')
         if absolute and not path.startswith('/'):path='/'+path
-        elif not absolute:path='^'+path
         return ('NODEPATH',path),p
     raise ValueError(f'unsupported Variant type {typ} at 0x{p-4:x}')
 
@@ -70,7 +78,9 @@ def decode_payload(data:bytes):
     if version != 101:
         raise ValueError(f'unsupported GDSC version {version}; OpenGDS currently supports GDSC v101')
     dec_size=u32(data,8);payload=data[12:]
-    if dec_size and len(payload)!=dec_size:
+    if dec_size:
+        if shutil.which('zstd') is None:
+            raise ValueError('zstd is required to decode compressed GDSC files; install the zstd command-line tool')
         with tempfile.TemporaryDirectory() as td:
             a=Path(td)/'in.zst';o=Path(td)/'out.bin';a.write_bytes(payload)
             r=subprocess.run(['zstd','-q','-d','-f',str(a),'-o',str(o)],
@@ -78,6 +88,8 @@ def decode_payload(data:bytes):
             if r.returncode:
                 raise ValueError('zstd decompression failed: '+r.stderr.decode(errors='replace'))
             raw=o.read_bytes()
+        if len(raw)!=dec_size:
+            raise ValueError(f'decompressed size mismatch: expected {dec_size}, got {len(raw)}')
     else:
         raw=payload
     return version,dec_size,raw
@@ -115,7 +127,7 @@ def token_text(t,ids,constants):
     if n=='LITERAL':
         v=constants[t.arg] if t.arg<len(constants) else f'<const:{t.arg}>'
         if isinstance(v,tuple) and v[0]=='STRINGNAME':return '&'+quote_string(v[1])
-        if isinstance(v,tuple) and v[0]=='NODEPATH':return '^'+quote_string(v[1][1:]) if v[1].startswith('^') else quote_string(v[1])
+        if isinstance(v,tuple) and v[0]=='NODEPATH':return '^'+quote_string(v[1])
         if isinstance(v,str):return quote_string(v)
         if v is True:return 'true'
         if v is False:return 'false'
@@ -171,168 +183,93 @@ def _needs_backslash(prev_text, next_first, nesting):
         return False
     return False
 
-def reconstruct(ids,constants,line_map,tokens):
+def _roundtrip_literal_text(token, ids, constants, index, tokens, column_map):
+    """Choose literal spelling that preserves token start/end-line behavior."""
+    if token.typ == 3:
+        value = constants[token.arg]
+        if isinstance(value, str) and "\n" in value and index + 1 < len(tokens):
+            next_token = tokens[index + 1]
+            delta = max(0, next_token.line - token.line)
+            # If the next token has no position-map entry, its line must be
+            # covered by this literal (or a continuation). Use only as many
+            # physical newlines as needed; encode the remaining value newlines
+            # as escaped \n so the literal value remains identical.
+            physical_newlines = min(value.count("\n"), delta) if delta and (index + 1) not in column_map else 0
+            if physical_newlines:
+                body = []
+                seen = 0
+                for char in value:
+                    if char == "\\":
+                        body.append("\\\\")
+                    elif char == '"':
+                        body.append('\\"')
+                    elif char == "\r":
+                        body.append("\\r")
+                    elif char == "\n":
+                        body.append("\n" if seen < physical_newlines else "\\n")
+                        seen += 1
+                    elif char == "\t":
+                        body.append("\\t")
+                    else:
+                        body.append(char)
+                return '"""' + ''.join(body) + '"""'
+    return token_text(token, ids, constants)
+
+
+def reconstruct(ids, constants, line_map, column_map, tokens):
+    """Rebuild source while preserving every v101 token line/column entry.
+
+    GDSC strips comments and most whitespace, so source formatting is
+    reconstructed. Unlike the former pretty-printer, this routine does not
+    invent statement boundaries: stored token line numbers remain authoritative.
     """
-    Reconstruct from the compiler's token line/column metadata.
+    out = []
+    physical_line = 1
+    previous = ''
+    nodepath = False
 
-    Important:
-      * token.line is the authoritative source line
-      * token.column is a 1-based character column for the first token on a line
-      * columns cannot distinguish tabs from spaces, so indentation depth is
-        reconstructed from the smallest common column step and emitted as tabs
-      * physical line continuations are restored only when the expression
-        requires a backslash; lines inside (), [], {} do not need one.
-    """
-    rows=[]
-    cur_line=None
-    parts=[]
-    prev=''
-    nesting=0
-    first_col=None
-    skip_equal=False
-    line_first_text=''
-    line_last_text=''
-    line_nesting_start=0
-    nodepath=False
-
-    def flush(next_first=None, next_line=None):
-        nonlocal parts,prev,nesting,cur_line,first_col,line_first_text,line_last_text,line_nesting_start
-        if cur_line is None:
-            return
-        text=''.join(parts).rstrip()
-        rows.append({
-            'line':cur_line,
-            'text':text,
-            'col':first_col,
-            'last':line_last_text,
-            'nesting':line_nesting_start,
-            'next_first':next_first,
-        })
-        parts=[];prev='';first_col=None;line_first_text='';line_last_text=''
-
-    for pos,t in enumerate(tokens):
-        n=TOK[t.typ]
-        if n in ('NEWLINE','INDENT','DEDENT','TK_EOF'):
+    for index, token in enumerate(tokens):
+        text = _roundtrip_literal_text(token, ids, constants, index, tokens, column_map)
+        if not text:
             continue
 
-        # Some GDSC revisions lose/flatten token line numbers for statements
-        # that follow a block header. Recover the boundary from GDScript syntax.
-        if cur_line is not None and t.line == cur_line and nesting == 0 and parts:
-            prev_name = TOK[tokens[pos-1].typ] if pos else ''
-            current_text = ''.join(parts).rstrip()
-            statement_start = n in (
-                'IF','ELIF','ELSE','FOR','WHILE','MATCH','VAR','CONST','SIGNAL',
-                'RETURN','BREAK','CONTINUE','FUNC','CLASS_NAME','ANNOTATION'
-            )
-            bare_expr_start = n == 'IDENTIFIER' and prev_name in (
-                'PARENTHESIS_CLOSE','IDENTIFIER','LITERAL'
-            )
-            if (current_text.endswith(':') and statement_start) or bare_expr_start:
-                flush()
-                cur_line=t.line
-                line_nesting_start=nesting
+        if token.line > physical_line:
+            delta = token.line - physical_line
+            if index in column_map:
+                out.append('\n' * delta)
+                physical_line = token.line
+                out.append(' ' * max(0, column_map[index] - 1))
+                previous = ''
+                nodepath = False
+            else:
+                # Godot removes explicit line-continuation lines from the
+                # position maps. Recreate the continuation marker.
+                out.append(' ' + chr(92) + '\n')
+                physical_line += 1
+                if delta > 1:
+                    out.append('\n' * (delta - 1))
+                    physical_line += delta - 1
 
-        # Detect a source line transition before consuming this token.
-        if cur_line is None:
-            cur_line=t.line
-            line_nesting_start=nesting
-        elif t.line != cur_line:
-            # We know the first token of the new source line now.
-            next_text=token_text(t,ids,constants)
-            flush(next_text,t.line)
-            cur_line=t.line
-            line_nesting_start=nesting
-
-        if first_col is None and t.column is not None:
-            first_col=t.column
-
-        # := is represented by COLON + EQUAL in this GDSC token stream.
-        if n=='COLON' and pos+1<len(tokens) and TOK[tokens[pos+1].typ]=='EQUAL':
-            st=':='
-            skip_equal=True
-        elif skip_equal and n=='EQUAL':
-            skip_equal=False
-            continue
-        else:
-            skip_equal=False
-            st=token_text(t,ids,constants)
-
-        if not st:
-            continue
-
-        # `$Foo/Bar` is a NodePath: slash is part of the path, not division.
-        # Keep NodePath mode through every identifier/path separator; leave it
-        # only when a real operator/keyword follows (e.g. `as Type`).
-        if st == '$':
-            if prev in (':=', '=', '+=', '-=', '*=', '/=', '%=', '**='):
-                parts.append(' ')
-            nodepath=True
-        elif nodepath and (st == '/' or n == 'IDENTIFIER'):
+        if text == '$':
+            if previous in (':=', '=', '+=', '-=', '*=', '/=', '%=', '**='):
+                out.append(' ')
+            nodepath = True
+        elif nodepath and (text == '/' or TOK[token.typ] == 'IDENTIFIER'):
             pass
         elif nodepath:
-            if needs_space(prev, st):
-                parts.append(' ')
-            nodepath=False
-        elif needs_space(prev,st):
-            parts.append(' ')
-        parts.append(st)
-        prev=st
-        line_last_text=st
-        if not line_first_text:
-            line_first_text=st
+            if needs_space(previous, text):
+                out.append(' ')
+            nodepath = False
+        elif needs_space(previous, text):
+            out.append(' ')
 
-        if st in ('(', '[', '{'):
-            nesting += 1
-        elif st in (')', ']', '}'):
-            nesting=max(0,nesting-1)
+        out.append(text)
+        previous = text
+        if text.startswith('"""'):
+            physical_line += text.count('\n')
 
-    flush()
-    if not rows:
-        return ''
-
-    # Infer indentation depth from source columns.
-    unit=_indent_unit([r['col'] for r in rows])
-    out=[]
-    previous_line=None
-
-    for i,r in enumerate(rows):
-        line=r['line']
-        if previous_line is not None and line > previous_line+1:
-            out.extend(['']*(line-previous_line-1))
-
-        col=r['col'] or 1
-        depth=max(0,(col-1)//unit)
-        text=r['text']
-
-        # A token line with no column is often an explicit continuation.
-        # Its indentation is derived from the owning statement.
-        is_continuation = (
-            i > 0 and rows[i-1]['line'] == line-1 and
-            _needs_backslash(
-                rows[i-1]['last'],
-                text.lstrip().split(' ',1)[0] if text.strip() else '',
-                rows[i-1]['nesting']
-            )
-        )
-
-        if is_continuation:
-            prev_depth=max(0,((rows[i-1]['col'] or 1)-1)//unit)
-            # Conventional GDScript continuation indentation.
-            depth=prev_depth+2
-
-        # If this line starts an explicit continuation, append the backslash
-        # to the PREVIOUS line, not to this line.
-        if i > 0 and rows[i-1]['line'] == line-1 and _needs_backslash(
-                rows[i-1]['last'],
-                text.lstrip().split(' ',1)[0] if text.strip() else '',
-                rows[i-1]['nesting']):
-            if out and not out[-1].rstrip().endswith('\\'):
-                out[-1]=out[-1].rstrip()+' \\'
-
-        out.append('\t'*depth+text)
-        previous_line=line
-
-    return '\n'.join(out)+'\n'
+    out.append('\n')
+    return ''.join(out)
 
 def decode_file(path):return decode_gdsc(Path(path).read_bytes())
 
@@ -368,6 +305,71 @@ def disasm_report(path,decoded):
     version,ids,constants,lm,cm,toks=decoded
     out=[f'FILE: {path}',f'GDSC version: {version}',f'Identifiers: {len(ids)}  Constants: {len(constants)}  Tokens: {len(toks)}','', 'INDEX  LINE COL  TYPE                   ARG     TEXT']
     for t in toks:out.append(f'{t.index:5} {t.line:5} {str(t.column if t.column is not None else "-"):>3}  {TOK[t.typ]:22} {t.arg:7}  {token_text(t,ids,constants)!r}')
+    return '\n'.join(out)+'\n'
+
+
+def format_bytes(size):
+    """Human-readable binary size while retaining exact bytes in the report."""
+    value=float(size)
+    for unit in ('B','KiB','MiB','GiB','TiB'):
+        if value < 1024.0 or unit == 'TiB':
+            return f'{size:,} bytes ({value:.2f} {unit})'
+        value /= 1024.0
+
+
+def info_report(path):
+    """Report container metadata and fully validate supported GDSC v101 files."""
+    p=Path(path)
+    data=p.read_bytes()
+    if len(data)<12:
+        raise ValueError(f'short GDSC header: {len(data)} bytes; expected at least 12')
+    if data[:4] != b'GDSC':
+        raise ValueError('not a GDSC file (missing GDSC signature)')
+
+    version=u32(data,4)
+    declared_decoded_size=u32(data,8)
+    stored_payload_size=len(data)-12
+    digest=hashlib.sha256(data).hexdigest()
+    out=[
+        f'FILE: {p}',
+        'FORMAT: Godot GDScript binary-token container (GDSC)',
+        f'SIGNATURE: {data[:4].decode("ascii")}',
+        f'BYTECODE VERSION: {version}',
+        'ENGINE RELEASE: Not encoded in the GDSC header',
+        f'FILE SIZE: {format_bytes(len(data))}',
+        f'HEADER SIZE: 12 bytes',
+        f'STORED PAYLOAD: {format_bytes(stored_payload_size)}',
+        f'COMPRESSION: {"Zstandard" if declared_decoded_size else "None (raw payload)"}',
+        f'DECLARED DECODED SIZE: {format_bytes(declared_decoded_size) if declared_decoded_size else "Not present (raw payload)"}',
+        f'SHA-256: {digest}',
+    ]
+
+    if version != 101:
+        out.append('VALIDATION: Not decoded (this OpenGDS build supports GDSC v101 only)')
+        return '\n'.join(out)+'\n'
+
+    decoded=decode_gdsc(data)
+    _version,ids,constants,line_map,column_map,tokens=decoded
+    raw_size=declared_decoded_size if declared_decoded_size else stored_payload_size
+    out.extend([
+        'VALIDATION: PASS (GDSC v101 structure and payload decoded)',
+        f'DECODED PAYLOAD: {format_bytes(raw_size)}',
+        f'IDENTIFIERS: {len(ids):,}',
+        f'CONSTANTS: {len(constants):,}',
+        f'TOKEN LINE ENTRIES: {len(line_map):,}',
+        f'TOKEN COLUMN ENTRIES: {len(column_map):,}',
+        f'TOKENS: {len(tokens):,}',
+    ])
+    if raw_size:
+        ratio=stored_payload_size/raw_size
+        if not declared_decoded_size:
+            out.append('STORED / DECODED RATIO: 1.000 (uncompressed)')
+        elif ratio < 1.0:
+            out.append(f'STORED / DECODED RATIO: {ratio:.3f} ({(1.0-ratio)*100:.1f}% smaller)')
+        elif ratio > 1.0:
+            out.append(f'STORED / DECODED RATIO: {ratio:.3f} ({(ratio-1.0)*100:.1f}% larger; compression overhead for this small payload)')
+        else:
+            out.append('STORED / DECODED RATIO: 1.000 (same size)')
     return '\n'.join(out)+'\n'
 
 SECRET_PATTERNS=[
@@ -442,30 +444,408 @@ def audit_summary(path, decoded):
     suffix=', '.join(f'{k}={v}' for k,v in sorted(kinds.items()))
     return f'{path}: findings={total}' + (f' ({suffix})' if suffix else '')
 
+
+# Native Python port of Godot 4.5 GDScript tokenizer-buffer v101.
+# Godot 4.5 / GDSC tokenizer v101 enum from gdscript_tokenizer.h
+TOK_NAMES = [
+'EMPTY','ANNOTATION','IDENTIFIER','LITERAL','LESS','LESS_EQUAL','GREATER','GREATER_EQUAL','EQUAL_EQUAL','BANG_EQUAL',
+'AND','OR','NOT','AMPERSAND_AMPERSAND','PIPE_PIPE','BANG','AMPERSAND','PIPE','TILDE','CARET','LESS_LESS','GREATER_GREATER',
+'PLUS','MINUS','STAR','STAR_STAR','SLASH','PERCENT','EQUAL','PLUS_EQUAL','MINUS_EQUAL','STAR_EQUAL','STAR_STAR_EQUAL',
+'SLASH_EQUAL','PERCENT_EQUAL','LESS_LESS_EQUAL','GREATER_GREATER_EQUAL','AMPERSAND_EQUAL','PIPE_EQUAL','CARET_EQUAL',
+'IF','ELIF','ELSE','FOR','WHILE','BREAK','CONTINUE','PASS','RETURN','MATCH','WHEN','AS','ASSERT','AWAIT','BREAKPOINT',
+'CLASS','CLASS_NAME','TK_CONST','ENUM','EXTENDS','FUNC','TK_IN','IS','NAMESPACE','PRELOAD','SELF','SIGNAL','STATIC','SUPER','TRAIT','VAR','TK_VOID','YIELD',
+'BRACKET_OPEN','BRACKET_CLOSE','BRACE_OPEN','BRACE_CLOSE','PARENTHESIS_OPEN','PARENTHESIS_CLOSE','COMMA','SEMICOLON','PERIOD','PERIOD_PERIOD','PERIOD_PERIOD_PERIOD','COLON','DOLLAR','FORWARD_ARROW','UNDERSCORE',
+'NEWLINE','INDENT','DEDENT','CONST_PI','CONST_TAU','CONST_INF','CONST_NAN','VCS_CONFLICT_MARKER','BACKTICK','QUESTION_MARK','ERROR','TK_EOF'
+]
+assert len(TOK_NAMES)==100, len(TOK_NAMES)
+T={n:i for i,n in enumerate(TOK_NAMES)}
+KW={
+'as':'AS','and':'AND','assert':'ASSERT','await':'AWAIT','break':'BREAK','breakpoint':'BREAKPOINT','class':'CLASS','class_name':'CLASS_NAME','const':'TK_CONST','continue':'CONTINUE','elif':'ELIF','else':'ELSE','enum':'ENUM','extends':'EXTENDS','for':'FOR','func':'FUNC','if':'IF','in':'TK_IN','is':'IS','match':'MATCH','namespace':'NAMESPACE','not':'NOT','or':'OR','pass':'PASS','preload':'PRELOAD','return':'RETURN','self':'SELF','signal':'SIGNAL','static':'STATIC','super':'SUPER','trait':'TRAIT','var':'VAR','void':'TK_VOID','while':'WHILE','when':'WHEN','yield':'YIELD','INF':'CONST_INF','NAN':'CONST_NAN','PI':'CONST_PI','TAU':'CONST_TAU'
+}
+OPS={
+'==':'EQUAL_EQUAL','!=':'BANG_EQUAL','&&':'AMPERSAND_AMPERSAND','||':'PIPE_PIPE','<<':'LESS_LESS','>>':'GREATER_GREATER',
+'+=':'PLUS_EQUAL','-=':'MINUS_EQUAL','*=':'STAR_EQUAL','**=':'STAR_STAR_EQUAL','/=':'SLASH_EQUAL','%=':'PERCENT_EQUAL','<<=':'LESS_LESS_EQUAL','>>=':'GREATER_GREATER_EQUAL','&=':'AMPERSAND_EQUAL','|=':'PIPE_EQUAL','^=':'CARET_EQUAL',
+'<=':'LESS_EQUAL','>=':'GREATER_EQUAL','->':'FORWARD_ARROW','**':'STAR_STAR',
+'[':'BRACKET_OPEN',']':'BRACKET_CLOSE','{':'BRACE_OPEN','}':'BRACE_CLOSE','(':'PARENTHESIS_OPEN',')':'PARENTHESIS_CLOSE',',':'COMMA',';':'SEMICOLON','.':'PERIOD', '..':'PERIOD_PERIOD','...':'PERIOD_PERIOD_PERIOD',':':'COLON','$':'DOLLAR','_':'UNDERSCORE',
+'<':'LESS','>':'GREATER','+':'PLUS','-':'MINUS','*':'STAR','/':'SLASH','%':'PERCENT','=':'EQUAL','!':'BANG','&':'AMPERSAND','|':'PIPE','~':'TILDE','^':'CARET','?':'QUESTION_MARK','`':'BACKTICK'
+}
+# Fix invalid typo mapping above.
+OPS['=']='EQUAL'
+
+@dataclass
+class Tok:
+    typ:int; val:object; line:int; col:int; end_line:int
+
+class Lexer:
+    def __init__(self, src, tab_size=4):
+        self.s=src.replace('\r\n','\n').replace('\r','\n')
+        self.i=0; self.line=1; self.col=1; self.tab=tab_size
+        self.continuation_lines=[]; self.toks=[]
+        self.last_type=T['EMPTY']; self.last_val=None
+    def peek(self,n=0):
+        j=self.i+n
+        return self.s[j] if 0<=j<len(self.s) else ''
+    def adv(self):
+        if self.i>=len(self.s): return ''
+        c=self.s[self.i]; self.i+=1
+        if c=='\n': self.line+=1; self.col=1
+        else: self.col+=1
+        return c
+    def add(self, typ, val=None, line=None, col=None):
+        tok=Tok(typ, val, self.line if line is None else line, self.col if col is None else col, self.line)
+        self.toks.append(tok); self.last_type=typ; self.last_val=val
+        return tok
+    def can_precede_bin(self):
+        return self.last_type in {T['IDENTIFIER'],T['LITERAL'],T['SELF'],T['BRACKET_CLOSE'],T['BRACE_CLOSE'],T['PARENTHESIS_CLOSE'],T['CONST_PI'],T['CONST_TAU'],T['CONST_INF'],T['CONST_NAN']}
+    def skip(self):
+        while self.i<len(self.s):
+            c=self.peek()
+            if c in ' \t':
+                self.adv()
+                if c == '\t': self.col += self.tab - 1
+                continue
+            if c=='\n': self.adv(); continue
+            if c=='#':
+                while self.i<len(self.s) and self.peek()!='\n': self.adv()
+                continue
+            break
+    def ident_start(self,c): return bool(c) and (c=='_' or c.isalpha() or ord(c)>=128 and (c.isidentifier()))
+    def ident_cont(self,c): return bool(c) and (c=='_' or c.isalnum() or ord(c)>=128 and (('A'+c).isidentifier()))
+    def scan_ident(self,at=False):
+        st_line,st_col=self.line,self.col
+        s=''
+        while self.ident_cont(self.peek()): s+=self.adv()
+        if at:
+            self.add(T['ANNOTATION'],s,st_line,st_col); return
+        if s=='_': self.add(T['UNDERSCORE'],'_',st_line,st_col); return
+        if s in KW: self.add(T[KW[s]],s,st_line,st_col); return
+        if s=='true': self.add(T['LITERAL'],True,st_line,st_col); return
+        if s=='false': self.add(T['LITERAL'],False,st_line,st_col); return
+        if s=='null': self.add(T['LITERAL'],None,st_line,st_col); return
+        self.add(T['IDENTIFIER'],s,st_line,st_col)
+    def scan_number(self, signed=''):
+        st_line,st_col=self.line,self.col-(len(signed) if signed else 1)
+        raw=signed
+        # The first digit or dot has already been consumed by caller only if signed not empty? Keep simple by consuming rest from cursor.
+        # caller has consumed first char; reconstruct prefix from last consumed.
+        if not signed:
+            raw=self.s[self.i-1]
+        # Start from current cursor; follow Godot's basic number grammar.
+        if raw.endswith('.'):
+            has_dec=True
+        else: has_dec=False
+        base=10
+        if raw.endswith('0') and self.peek() in 'xXbB':
+            x=self.adv(); raw+=x; base=16 if x.lower()=='x' else 2
+            while self.peek() and (self.peek().isdigit() or self.peek()=='_' or (base==16 and self.peek().lower() in 'abcdef')): raw+=self.adv()
+        else:
+            while self.peek() and (self.peek().isdigit() or self.peek()=='_'):
+                raw+=self.adv()
+            if base==10 and self.peek()=='.' and self.peek(1)!='.':
+                has_dec=True; raw+=self.adv()
+                while self.peek() and (self.peek().isdigit() or self.peek()=='_'): raw+=self.adv()
+            if base==10 and self.peek() in 'eE':
+                has_dec=True; raw+=self.adv()
+                if self.peek() in '+-': raw+=self.adv()
+                while self.peek() and (self.peek().isdigit() or self.peek()=='_'): raw+=self.adv()
+        clean=raw.replace('_','')
+        try:
+            if base==16: val=int(clean,16)
+            elif base==2: val=int(clean,2)
+            elif has_dec or 'e' in clean.lower(): val=float(clean)
+            else: val=int(clean,10)
+        except Exception: raise ValueError(f'bad number {raw} at {st_line}:{st_col}')
+        self.add(T['LITERAL'],val,st_line,st_col)
+    def scan_string(self, prefix=''):
+        st_line=self.line; st_col=self.col-len(prefix)-1 # prefix and opening quote consumed
+        quote=self.s[self.i-1]
+        # For prefix r/&/^, opening quote was just consumed after prefix.
+        multiline=self.peek()==quote and self.peek(1)==quote
+        if multiline:
+            self.adv(); self.adv()
+        out=[]; raw=(prefix=='r'); typ='STRING'
+        if prefix=='&': typ='STRINGNAME'
+        elif prefix=='^': typ='NODEPATH'
+        while self.i<len(self.s):
+            c=self.peek()
+            if c=='\\':
+                self.adv()
+                if not self.peek(): raise ValueError('unterminated string')
+                esc=self.adv()
+                if raw:
+                    if esc==quote: out.extend(['\\',quote])
+                    elif esc=='\\': out.extend(['\\','\\'])
+                    else: out.append('\\')
+                else:
+                    mp={'a':'\a','b':'\b','f':'\f','n':'\n','r':'\r','t':'\t','v':'\v',"'":"'",'"':'"','\\':'\\'}
+                    if esc in mp: out.append(mp[esc])
+                    elif esc in ('u','U'):
+                        n=4 if esc=='u' else 6
+                        hx=''.join(self.adv() for _ in range(n))
+                        out.append(chr(int(hx,16)))
+                    elif esc=='\n': pass
+                    else: raise ValueError(f'invalid escape \\{esc}')
+                continue
+            if c==quote:
+                self.adv()
+                if multiline:
+                    if self.peek()==quote and self.peek(1)==quote:
+                        self.adv(); self.adv(); break
+                    out.append(quote)
+                else: break
+                continue
+            self.adv(); out.append(c)
+        else: raise ValueError('unterminated string')
+        v=''.join(out)
+        if typ=='STRINGNAME': val=('STRINGNAME',v)
+        elif typ=='NODEPATH': val=('NODEPATH',v)
+        else: val=v
+        self.add(T['LITERAL'],val,st_line,st_col)
+    def tokenize(self):
+        while self.i<len(self.s):
+            self.skip()
+            if self.i>=len(self.s): break
+            st_line,st_col=self.line,self.col
+            c=self.adv()
+            if c=='\\':
+                if self.peek()=='\n':
+                    self.adv(); self.continuation_lines.append(self.line); continue
+                raise ValueError(f'Unexpected backslash at {st_line}:{st_col}')
+            if c.isdigit(): self.scan_number(); continue
+            if c=='.' and self.peek().isdigit(): self.scan_number(); continue
+            if c=='r' and self.peek() in ('"',"'"):
+                self.adv(); self.scan_string('r'); continue
+            if self.ident_start(c):
+                # identifier scan with first char consumed
+                while self.ident_cont(self.peek()): c+=self.adv()
+                if c=='_': self.add(T['UNDERSCORE'],'_',st_line,st_col)
+                elif c in KW: self.add(T[KW[c]],c,st_line,st_col)
+                elif c=='true': self.add(T['LITERAL'],True,st_line,st_col)
+                elif c=='false': self.add(T['LITERAL'],False,st_line,st_col)
+                elif c=='null': self.add(T['LITERAL'],None,st_line,st_col)
+                else: self.add(T['IDENTIFIER'],c,st_line,st_col)
+                continue
+            if c=='@':
+                name=''
+                if not self.ident_start(self.peek()): raise ValueError(f'bad annotation at {st_line}:{st_col}')
+                name+=self.adv()
+                while self.ident_cont(self.peek()): name+=self.adv()
+                self.add(T['ANNOTATION'],'@'+name,st_line,st_col); continue
+            if c in ('"',"'"):
+                self.scan_string(); continue
+            if c in ('&','^') and self.peek() in ('"',"'"):
+                self.adv(); self.scan_string(c); continue
+            # signed numbers: Godot treats +/- as part of literal where prior token cannot end expression
+            if c in '+-' and self.peek().isdigit() and not self.can_precede_bin():
+                self.scan_number(c); continue
+            # Longest multi-char operator
+            op=None
+            for n in (3,2):
+                cand=c+''.join(self.peek(k) for k in range(n-1))
+                if cand in OPS:
+                    op=cand
+                    for _ in range(n-1): self.adv()
+                    break
+            if op is None: op=c
+            if op not in OPS: raise ValueError(f'unknown char {op!r} at {st_line}:{st_col}')
+            if op=='.' and self.peek().isdigit():
+                self.scan_number(); continue
+            self.add(T[OPS[op]],op,st_line,st_col)
+        return self.toks, self.continuation_lines
+
+# --- Variant writer and GDSC v101 serialization ---
+def variant_key(v):
+    if isinstance(v,tuple): return v
+    if v is None: return ('nil',)
+    if isinstance(v,bool): return ('bool',v)
+    if isinstance(v,int): return ('int',v)
+    if isinstance(v,float): return ('float',struct.pack('<d',v))
+    if isinstance(v,str): return ('string',v)
+    return (type(v).__name__,repr(v))
+
+def encode_variant(v):
+    if v is None: return struct.pack('<I',0)
+    if isinstance(v,bool): return struct.pack('<II',1,int(v))
+    if isinstance(v,int):
+        if v>2147483647 or v< -2147483648: return struct.pack('<Iq',2|(1<<16),v)
+        return struct.pack('<Ii',2,v)
+    if isinstance(v,float):
+        f=struct.unpack('<f',struct.pack('<f',v))[0]
+        if float(f)==v: return struct.pack('<If',3,f)
+        return struct.pack('<Id',3|(1<<16),v)
+    if isinstance(v,str):
+        data=v.encode('utf-8'); pad=(-len(data))%4
+        return struct.pack('<II',4,len(data))+data+b'\0'*pad
+    if isinstance(v,tuple) and v[0]=='STRINGNAME':
+        data=v[1].encode('utf-8'); pad=(-len(data))%4
+        return struct.pack('<II',21,len(data))+data+b'\0'*pad
+    if isinstance(v,tuple) and v[0]=='NODEPATH':
+        # Basic NodePath support: slash-delimited names, colon-delimited subnames.
+        path=v[1]; absolute=path.startswith('/')
+        body=path[1:] if absolute else path
+        bits=body.split(':'); node=bits[0]; subs=bits[1:] if len(bits)>1 else []
+        names=[x for x in node.split('/') if x]
+        out=bytearray(struct.pack('<III',len(names)|0x80000000,len(subs),1 if absolute else 0))
+        for s in names+subs:
+            b=s.encode(); out += struct.pack('<I',len(b))+b+b'\0'*((-len(b))%4)
+        return struct.pack('<I',22)+out
+    raise TypeError(f'unsupported Variant: {v!r}')
+
+def zstd_compress(data, level=3):
+    libname=ctypes.util.find_library('zstd')
+    if not libname: raise RuntimeError('libzstd not found (needed for Godot-compatible Zstandard output)')
+    lib=ctypes.CDLL(libname)
+    lib.ZSTD_compressBound.argtypes=[ctypes.c_size_t]; lib.ZSTD_compressBound.restype=ctypes.c_size_t
+    lib.ZSTD_compress.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_int]; lib.ZSTD_compress.restype=ctypes.c_size_t
+    lib.ZSTD_isError.argtypes=[ctypes.c_size_t]; lib.ZSTD_isError.restype=ctypes.c_uint
+    cap=lib.ZSTD_compressBound(len(data)); dst=ctypes.create_string_buffer(cap); src=ctypes.create_string_buffer(data)
+    n=lib.ZSTD_compress(dst,cap,src,len(data),level)
+    if lib.ZSTD_isError(n): raise RuntimeError('Zstandard compression failed')
+    return dst.raw[:n]
+
+def compile_gd(src, compress=True, tab_size=4):
+    lexer=Lexer(src,tab_size=tab_size); toks, continuation_lines=lexer.tokenize()
+    ids=[]; id_map={}; constants=[]; c_map={}
+    token_bin=bytearray(); token_lines={}; token_cols={}; last_line=0
+    for i,t in enumerate(toks):
+        typ=t.typ; tv=typ
+        if typ in (T['ANNOTATION'],T['IDENTIFIER']):
+            key=t.val
+            if key not in id_map: id_map[key]=len(ids); ids.append(key)
+            tv |= id_map[key]<<8
+        elif typ==T['LITERAL']:
+            key=variant_key(t.val)
+            if key not in c_map: c_map[key]=len(constants); constants.append(t.val)
+            tv |= c_map[key]<<8
+        token_bin += struct.pack('<II',tv|0x80,t.line)
+        if i>0 and t.line>last_line:
+            token_lines[i]=t.line; token_cols[i]=t.col
+        last_line=t.end_line
+    # Remove column/line entries for explicit continuation lines, as the engine does.
+    for line in continuation_lines:
+        idx=next((k for k,v in token_lines.items() if v==line),None)
+        if idx is not None: token_lines.pop(idx,None); token_cols.pop(idx,None)
+    content=bytearray(struct.pack('<4I',len(ids),len(constants),len(token_lines),len(toks)))
+    for s in ids:
+        codepoints=[ord(ch) for ch in s]
+        content += struct.pack('<I',len(codepoints))
+        for cp in codepoints: content += bytes(x^0xb6 for x in struct.pack('<I',cp))
+    for v in constants: content += encode_variant(v)
+    for i,line in sorted(token_lines.items()): content += struct.pack('<II',i,line)
+    for i,col in sorted(token_cols.items()): content += struct.pack('<II',i,col)
+    content += token_bin
+    if compress:
+        payload=zstd_compress(bytes(content),3)
+        return b'GDSC'+struct.pack('<II',101,len(content))+payload
+    return b'GDSC'+struct.pack('<II',101,0)+content
+
+
 def process_one(mode,path,stdout=False):
+    if mode=='info':return info_report(path)
     if mode=='hexdump':
         # Hexdump the decoded GDSC payload, not the compressed GDSC container.
         _version, _header_field, raw = decode_payload(Path(path).read_bytes())
         return hexdump(raw)
     decoded=decode_file(path)
-    if mode=='dcmp':return reconstruct(decoded[1],decoded[2],decoded[3],decoded[5])
+    if mode=='dcmp':return reconstruct(decoded[1],decoded[2],decoded[3],decoded[4],decoded[5])
     if mode=='consts':return const_report(path,decoded)
     if mode=='disasm':return disasm_report(path,decoded)
     if mode=='audit':return audit_report(path,decoded)
     raise ValueError(mode)
 
+def compile_gd_file(src_path, dest_path, compressed=True, force=False, tab_size=4):
+    """Compile GDScript text into a native GDSC v101 tokenizer buffer.
+
+    This is a direct Python implementation of Godot's tokenizer-buffer writer;
+    it does not launch or require the Godot editor.
+    """
+    src_path = Path(src_path)
+    dest_path = Path(dest_path)
+    if dest_path.exists() and not force:
+        raise FileExistsError(f'Output exists (use --force to replace it): {dest_path}')
+
+    source = src_path.read_text(encoding='utf-8-sig')
+    output = compile_gd(source, compress=compressed, tab_size=tab_size)
+    decoded = decode_gdsc(output)
+    if decoded[0] != 101:
+        raise ValueError(f'compiler produced unsupported GDSC version {decoded[0]}')
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = dest_path.with_name(dest_path.name + '.opengds-tmp')
+    try:
+        temp_path.write_bytes(output)
+        temp_path.replace(dest_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    return hashlib.sha256(output).hexdigest(), len(output), len(decoded[5])
+
+
+def run_comp(args, path):
+    files = iter_files(path, suffix='.gd')
+    if not files:
+        raise SystemExit(f'No .gd files found: {path}')
+
+    input_path = Path(path)
+    is_folder = input_path.is_dir()
+    if is_folder:
+        output_root = Path(args.outdir or args.output) if (args.outdir or args.output) else Path(str(input_path) + '.comp')
+    elif args.outdir:
+        output_root = Path(args.outdir) / input_path.with_suffix('.gdc').name
+    else:
+        output_root = Path(args.output) if args.output else input_path.with_suffix('.gdc')
+
+    base = input_path.resolve()
+    ok = bad = 0
+    for source in files:
+        try:
+            if is_folder:
+                rel = source.resolve().relative_to(base)
+                dest = output_root / rel.with_suffix('.gdc')
+            else:
+                dest = output_root
+            digest, size, token_count = compile_gd_file(
+                source, dest, compressed=not args.no_compress,
+                force=args.force, tab_size=args.tab_size
+            )
+            ok += 1
+            print(f'[OK] {source} -> {dest}  tokens={token_count}  size={size}  SHA-256={digest}')
+        except Exception as error:
+            bad += 1
+            print(f'[ERROR] {source}: {error}', file=os.sys.stderr)
+            if not args.continue_on_error:
+                print('Stopped. Use --continue-on-error to process remaining .gd files.', file=os.sys.stderr)
+                raise SystemExit(2)
+
+    print(f'Compiled: {ok}  Failed: {bad}  Output directory: {output_root if is_folder else output_root.parent}')
+    if bad:
+        raise SystemExit(2)
+
+
 def main():
-    ap=argparse.ArgumentParser(prog='OpenGDS.py')
-    ap.add_argument('mode',choices=['dcmp','hexdump','audit','consts','disasm'])
+    ap=argparse.ArgumentParser(prog='OpenGDS')
+    ap.add_argument('mode',choices=['info','comp','dcmp','hexdump','audit','consts','disasm'])
     ap.add_argument('path')
     ap.add_argument('-o','--output',help='output file for single-file input, or output root for folder input')
     ap.add_argument('--outdir',help='output root for folder input')
     ap.add_argument('--continue-on-error',action='store_true',help='continue recursive processing after a bad GDC')
+    ap.add_argument('--tab-size',type=int,default=4,help='tab width used when measuring source columns (default: 4)')
+    ap.add_argument('--no-compress',action='store_true',help='write uncompressed GDSC token data (comp only)')
+    ap.add_argument('--force',action='store_true',help='overwrite existing comp output files')
     args=ap.parse_args()
     p=Path(args.path)
-    files=iter_files(p)
+
+    if args.mode=='comp':
+        try:
+            run_comp(args,p)
+        except Exception as e:
+            raise SystemExit(f'ERROR: {e}')
+        return
+
+    suffix='.gdc'
+    files=iter_files(p,suffix=suffix)
     if not files:
-        raise SystemExit(f'No .gdc files found: {p}')
+        raise SystemExit(f'No {suffix} files found: {p}')
     is_folder=p.is_dir()
     if not is_folder:
         try:result=process_one(args.mode,p)
@@ -474,6 +854,7 @@ def main():
         if args.output:Path(args.output).write_text(result,encoding='utf-8')
         else:print(result,end='')
         return
+
     root=Path(args.outdir or args.output) if (args.outdir or args.output) else Path(str(p)+'.'+args.mode)
     root.mkdir(parents=True,exist_ok=True)
     base=p.resolve()
@@ -487,9 +868,10 @@ def main():
             elif args.mode=='audit':
                 summaries.append(audit_summary(f, decode_file(f)))
             rel=f.resolve().relative_to(base)
-            ext='.gd' if args.mode=='dcmp' else ('.hex' if args.mode=='hexdump' else f'.{args.mode}.txt')
-            dest=root/rel
-            dest=dest.with_suffix(ext)
+            if args.mode=='dcmp':ext='.gd'
+            elif args.mode=='hexdump':ext='.hex'
+            else:ext=f'.{args.mode}.txt'
+            dest=(root/rel).with_suffix(ext)
             dest.parent.mkdir(parents=True,exist_ok=True)
             dest.write_text(result,encoding='utf-8')
             ok+=1
@@ -504,8 +886,7 @@ def main():
         summary_path=root/'SUMMARY.txt'
         summary_path.write_text('\n'.join(summaries)+'\n',encoding='utf-8')
         print(f'=== {args.mode} summary ===')
-        for s in summaries:
-            print(s)
+        for summary in summaries:print(summary)
         print(f'Summary: {summary_path}')
     print(f'Processed: {ok}  Failed: {bad}  Output directory: {root}')
     if bad:raise SystemExit(2)
