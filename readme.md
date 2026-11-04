@@ -1,4 +1,4 @@
-OpenGDS v1.0 - release 
+OpenGDS v1.0 Beta
 
 A Python-based Godot GDScript bytecode compiler, decompiler, disassembler, inspector, and security auditor.
 
