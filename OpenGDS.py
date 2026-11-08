@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """OpenGDS / OGDS
-GDSC inspector/decompiler for the supplied Godot 4.x GDSC v101 corpus.
+GDSC inspector/decompiler/compiler with native static debugging for Godot 4.x GDSC v101.
 
 Usage:
   python3 OpenGDS.py info <file-or-folder>
@@ -10,6 +10,8 @@ Usage:
   python3 OpenGDS.py consts <file-or-folder>
   python3 OpenGDS.py audit <file-or-folder>
   python3 OpenGDS.py disasm <file-or-folder>
+  python3 OpenGDS.py dbg <file-or-folder> [--breakpoint LINE] [--show-tokens]
+  python3 OpenGDS.py diff <godot.gdc> <opengds.gdc>
 
 GDSC analysis modes accept .gdc files. comp accepts .gd files and uses
 a native Python port of Godot 4.5 GDSC v101 tokenization/serialization. Folder input is
@@ -39,6 +41,11 @@ KEYWORDS={k:k.lower() for k in ["IF","ELIF","ELSE","FOR","WHILE","BREAK","CONTIN
 class Token:
     index:int; typ:int; arg:int; line:int; column:int|None
 
+def _check_cancelled():
+    callback = globals().get('_opengds_cancel_check')
+    if callable(callback):
+        callback()
+
 def u32(b,p): return struct.unpack_from('<I',b,p)[0]
 
 def read_variant(b,p):
@@ -63,6 +70,7 @@ def read_variant(b,p):
         absolute=bool(np_flags&1)
         names=[]
         for _ in range(nc+sc):
+            _check_cancelled()
             n=u32(b,p);p+=4;raw=b[p:p+n];p=(p+n+3)&~3
             names.append(raw.rstrip(b'\0').decode('utf-8','replace'))
         node='/'.join(names[:nc]); path=node+(':'+':'.join(names[nc:]) if sc else '')
@@ -101,18 +109,32 @@ def decode_gdsc(data:bytes):
     if len(raw)<16:raise ValueError('short payload')
     id_n,const_n,line_n,tok_n=struct.unpack_from('<4I',raw,0);p=16;ids=[]
     for _ in range(id_n):
+        _check_cancelled()
         n=u32(raw,p);p+=4;chars=[]
         for j in range(n):
             x=bytes(c^0xB6 for c in raw[p+4*j:p+4*j+4]);chars.append(chr(struct.unpack('<I',x)[0]))
         p+=4*n;ids.append(''.join(chars))
     constants=[]
-    for _ in range(const_n):v,p=read_variant(raw,p);constants.append(v)
+    for _ in range(const_n):
+        _check_cancelled()
+        v,p=read_variant(raw,p);constants.append(v)
     lm={}
-    for _ in range(line_n):i,line=struct.unpack_from('<II',raw,p);p+=8;lm[i]=line
+    for _ in range(line_n):
+        _check_cancelled()
+        i,line=struct.unpack_from('<II',raw,p);p+=8
+        if i in lm:
+            raise ValueError(f'duplicate token index {i} in line map')
+        lm[i]=line
     cm={}
-    for _ in range(line_n):i,col=struct.unpack_from('<II',raw,p);p+=8;cm[i]=col
+    for _ in range(line_n):
+        _check_cancelled()
+        i,col=struct.unpack_from('<II',raw,p);p+=8
+        if i in cm:
+            raise ValueError(f'duplicate token index {i} in column map')
+        cm[i]=col
     toks=[]
     for i in range(tok_n):
+        _check_cancelled()
         word,line=struct.unpack_from('<II',raw,p);p+=8;typ=word&0x7f;arg=word>>8
         if typ>=len(TOK):raise ValueError(f'invalid token type {typ} at {i}')
         toks.append(Token(i,typ,arg,line,cm.get(i)))
@@ -229,6 +251,7 @@ def reconstruct(ids, constants, line_map, column_map, tokens):
     nodepath = False
 
     for index, token in enumerate(tokens):
+        _check_cancelled()
         text = _roundtrip_literal_text(token, ids, constants, index, tokens, column_map)
         if not text:
             continue
@@ -306,6 +329,320 @@ def disasm_report(path,decoded):
     out=[f'FILE: {path}',f'GDSC version: {version}',f'Identifiers: {len(ids)}  Constants: {len(constants)}  Tokens: {len(toks)}','', 'INDEX  LINE COL  TYPE                   ARG     TEXT']
     for t in toks:out.append(f'{t.index:5} {t.line:5} {str(t.column if t.column is not None else "-"):>3}  {TOK[t.typ]:22} {t.arg:7}  {token_text(t,ids,constants)!r}')
     return '\n'.join(out)+'\n'
+
+
+def validate_gdc_structure(decoded):
+    """Return conservative structural diagnostics for a decoded GDSC v101 file.
+
+    This checks the serialized token graph and source maps. It deliberately does
+    not claim to parse GDScript semantics or execute the program.
+    Each diagnostic is (severity, code, message, token_index).
+    """
+    version, ids, constants, line_map, column_map, tokens = decoded
+    findings = []
+
+    def add(severity, code, message, token_index=None):
+        findings.append((severity, code, message, token_index))
+
+    if version != 101:
+        add('ERROR', 'BYTECODE_VERSION', f'expected GDSC v101, got v{version}')
+
+    if not tokens:
+        add('WARNING', 'EMPTY_TOKEN_STREAM', 'the token stream is empty')
+        return findings
+
+    token_count = len(tokens)
+    if set(line_map) != set(column_map):
+        add('ERROR', 'POSITION_MAP_KEYS', 'line and column maps reference different token indices')
+
+    for index, line in line_map.items():
+        if not 0 <= index < token_count:
+            add('ERROR', 'LINE_MAP_INDEX', f'line map references token {index}, outside 0..{token_count - 1}')
+        if line < 1:
+            add('ERROR', 'LINE_MAP_VALUE', f'line map token {index} has invalid line {line}', index)
+        elif index < token_count and tokens[index].line != line:
+            add('ERROR', 'LINE_MAP_MISMATCH', f'line map says {line}, token stores line {tokens[index].line}', index)
+
+    for index, column in column_map.items():
+        if not 0 <= index < token_count:
+            add('ERROR', 'COLUMN_MAP_INDEX', f'column map references token {index}, outside 0..{token_count - 1}')
+        if column < 1:
+            add('ERROR', 'COLUMN_MAP_VALUE', f'column map token {index} has invalid column {column}', index)
+
+    delimiter_pairs = {
+        TOK.index('PARENTHESIS_OPEN'): TOK.index('PARENTHESIS_CLOSE'),
+        TOK.index('BRACKET_OPEN'): TOK.index('BRACKET_CLOSE'),
+        TOK.index('BRACE_OPEN'): TOK.index('BRACE_CLOSE'),
+    }
+    close_to_open = {close: open_ for open_, close in delimiter_pairs.items()}
+    stack = []
+    previous_line = 0
+
+    for token in tokens:
+        if token.index % 1024 == 0:
+            _check_cancelled()
+        if token.index < 0 or token.index >= token_count:
+            add('ERROR', 'TOKEN_INDEX', f'invalid token index {token.index}', token.index)
+
+        if token.line < 1:
+            add('ERROR', 'TOKEN_LINE', f'token has invalid source line {token.line}', token.index)
+        elif token.line < previous_line:
+            add('ERROR', 'NON_MONOTONIC_LINES',
+                f'source line moved backwards from {previous_line} to {token.line}', token.index)
+        previous_line = max(previous_line, token.line)
+
+        if token.typ in (TOK.index('ANNOTATION'), TOK.index('IDENTIFIER')) and token.arg >= len(ids):
+            add('ERROR', 'IDENTIFIER_REFERENCE',
+                f'{TOK[token.typ]} references identifier[{token.arg}], but only {len(ids)} exist', token.index)
+        elif token.typ == TOK.index('LITERAL') and token.arg >= len(constants):
+            add('ERROR', 'CONSTANT_REFERENCE',
+                f'LITERAL references constant[{token.arg}], but only {len(constants)} exist', token.index)
+
+        if token.typ == TOK.index('ERROR'):
+            add('ERROR', 'ERROR_TOKEN', 'the token stream contains a tokenizer ERROR token', token.index)
+        elif token.typ == TOK.index('VCS_CONFLICT_MARKER'):
+            add('WARNING', 'VCS_CONFLICT_MARKER', 'the source contains a version-control conflict marker', token.index)
+
+        if token.typ in delimiter_pairs:
+            stack.append((token.typ, token.index, token.line, token.column))
+        elif token.typ in close_to_open:
+            expected_open = close_to_open[token.typ]
+            if not stack:
+                add('ERROR', 'UNEXPECTED_CLOSER',
+                    f'unexpected {TOK[token.typ]} without a matching opener', token.index)
+            elif stack[-1][0] != expected_open:
+                opener = stack[-1]
+                add('ERROR', 'DELIMITER_MISMATCH',
+                    f'{TOK[token.typ]} does not match {TOK[opener[0]]} opened at token {opener[1]}',
+                    token.index)
+                # Pop the mismatched opener to prevent a cascade of duplicate reports.
+                stack.pop()
+            else:
+                stack.pop()
+
+    for opener_type, index, line, column in stack:
+        position = f'line {line}' + (f', column {column}' if column is not None else '')
+        add('ERROR', 'UNCLOSED_DELIMITER',
+            f'{TOK[opener_type]} opened at token {index} ({position}) has no matching closer', index)
+
+    return findings
+
+
+def dbg_report(path, decoded, breakpoints=(), show_tokens=False, context=4, max_tokens=200):
+    """Native, engine-independent GDSC structural debugger (static analysis only)."""
+    p = Path(path)
+    data = p.read_bytes()
+    version, ids, constants, line_map, column_map, tokens = decoded
+    declared_size = u32(data, 8) if len(data) >= 12 else 0
+    stored_size = max(0, len(data) - 12)
+    raw_size = declared_size if declared_size else stored_size
+    findings = validate_gdc_structure(decoded)
+
+    type_counts = {}
+    for token in tokens:
+        name = TOK[token.typ]
+        type_counts[name] = type_counts.get(name, 0) + 1
+
+    out = [
+        f'OPEN GDSC DEBUGGER: {p}',
+        f'FORMAT: GDSC v{version}',
+        f'CONTAINER: {len(data):,} bytes; {"Zstandard" if declared_size else "uncompressed"}',
+        f'PAYLOAD: {raw_size:,} bytes; stored payload {stored_size:,} bytes',
+        f'SYMBOLS: {len(ids):,} identifiers; {len(constants):,} constants',
+        f'SOURCE MAP: {len(line_map):,} line entries; {len(column_map):,} column entries',
+        f'TOKEN STREAM: {len(tokens):,} tokens',
+        '',
+    ]
+
+    if findings:
+        counts = {}
+        for severity, _code, _message, _index in findings:
+            counts[severity] = counts.get(severity, 0) + 1
+        summary = ', '.join(f'{key}={counts[key]}' for key in ('ERROR', 'WARNING', 'INFO') if counts.get(key))
+        out.append(f'DIAGNOSTICS: {len(findings)} ({summary})')
+        for severity, code, message, index in findings:
+            location = f' token #{index}' if index is not None else ''
+            out.append(f'[{severity}] {code}{location}: {message}')
+    else:
+        out.append('DIAGNOSTICS: 0')
+        out.append('STRUCTURE: PASS — references, source maps, token positions and delimiters are consistent')
+
+    interesting = ('FUNC', 'CLASS', 'CLASS_NAME', 'VAR', 'CONST', 'SIGNAL', 'IF', 'ELIF',
+                   'ELSE', 'FOR', 'WHILE', 'MATCH', 'RETURN', 'AWAIT', 'ASSERT', 'BREAKPOINT')
+    counts = [(name, type_counts.get(name, 0)) for name in interesting if type_counts.get(name, 0)]
+    out.append('')
+    out.append('CODE SHAPE: ' + (', '.join(f'{name}={count}' for name, count in counts) if counts else 'no common declaration/control-flow tokens'))
+
+    breakpoint_tokens = []
+    tokens_by_line = {}
+    for token in tokens:
+        tokens_by_line.setdefault(token.line, token)
+    available_lines = sorted(tokens_by_line)
+    for source_line in breakpoints:
+        if source_line < 1:
+            out.append(f'BREAKPOINT line {source_line}: INVALID (line numbers start at 1)')
+            continue
+        token = tokens_by_line.get(source_line)
+        if token is None:
+            before = max((line for line in available_lines if line < source_line), default=None)
+            after = min((line for line in available_lines if line > source_line), default=None)
+            out.append(f'BREAKPOINT line {source_line}: UNRESOLVED (no token starts on that source line; nearest previous={before}, next={after})')
+            continue
+        col = f':{token.column}' if token.column is not None else ''
+        out.append(f'BREAKPOINT line {source_line}: RESOLVED -> token #{token.index} at {source_line}{col} ({TOK[token.typ]} {token_text(token, ids, constants)!r})')
+        breakpoint_tokens.append(token.index)
+
+    if show_tokens:
+        out.append('')
+        out.append(f'TOKEN LIST (first {min(max_tokens, len(tokens)):,} of {len(tokens):,})')
+        out.append('INDEX  LINE COL  TYPE                   ARG     TEXT')
+        for token in tokens[:max_tokens]:
+            out.append(f'{token.index:5} {token.line:5} {str(token.column if token.column is not None else "-"):>3}  {TOK[token.typ]:22} {token.arg:7}  {token_text(token, ids, constants)!r}')
+        if len(tokens) > max_tokens:
+            out.append(f'... {len(tokens) - max_tokens:,} tokens omitted; increase --max-tokens to inspect more')
+
+    if breakpoint_tokens:
+        selected = set()
+        for index in breakpoint_tokens:
+            selected.update(range(max(0, index - context), min(len(tokens), index + context + 1)))
+        out.append('')
+        out.append(f'BREAKPOINT CONTEXT (±{context} tokens)')
+        out.append('INDEX  LINE COL  TYPE                   ARG     TEXT')
+        for index in sorted(selected):
+            token = tokens[index]
+            marker = '>' if index in breakpoint_tokens else ' '
+            out.append(f'{marker}{token.index:4} {token.line:5} {str(token.column if token.column is not None else "-"):>3}  {TOK[token.typ]:22} {token.arg:7}  {token_text(token, ids, constants)!r}')
+
+    out.extend([
+        '',
+        'DEBUGGER SCOPE: Static GDSC analysis; no Godot executable or game runtime is launched.',
+        'LIMIT: This maps source breakpoints to tokens and detects structural faults. It does not execute GDScript, inspect live variables, or prove semantic/runtime correctness.',
+    ])
+    return '\n'.join(out) + '\n'
+
+
+def _safe_variant_summary(value):
+    """Describe constants without dumping possible credentials or long string data."""
+    if isinstance(value, tuple) and len(value) >= 2:
+        kind, content = value[0], value[1]
+        if isinstance(content, str):
+            digest = hashlib.sha256(content.encode('utf-8')).hexdigest()[:12]
+            return f'{kind}(chars={len(content)}, sha256={digest})'
+        return f'{kind}({type(content).__name__})'
+    if isinstance(value, str):
+        digest = hashlib.sha256(value.encode('utf-8')).hexdigest()[:12]
+        return f'STRING(chars={len(value)}, sha256={digest})'
+    if value is None or isinstance(value, (bool, int, float)):
+        return repr(value)
+    return type(value).__name__
+
+
+def _safe_token_summary(token, ids, constants):
+    name = TOK[token.typ]
+    if token.typ in (TOK.index('ANNOTATION'), TOK.index('IDENTIFIER')):
+        value = ids[token.arg] if token.arg < len(ids) else f'<bad-id:{token.arg}>'
+        return f'{name} {value!r}'
+    if token.typ == TOK.index('LITERAL'):
+        value = constants[token.arg] if token.arg < len(constants) else f'<bad-constant:{token.arg}>'
+        return f'{name} {_safe_variant_summary(value)}'
+    return f'{name} arg={token.arg}'
+
+
+def diff_report(path_a, path_b, decoded_a=None, decoded_b=None, max_differences=12):
+    """Compare two GDSC containers at both compressed and decoded token levels."""
+    a_path, b_path = Path(path_a), Path(path_b)
+    a_data, b_data = a_path.read_bytes(), b_path.read_bytes()
+    decoded_a = decoded_a or decode_gdsc(a_data)
+    decoded_b = decoded_b or decode_gdsc(b_data)
+    ver_a, ids_a, const_a, lines_a, cols_a, toks_a = decoded_a
+    ver_b, ids_b, const_b, lines_b, cols_b, toks_b = decoded_b
+    raw_a = decode_payload(a_data)[2]
+    raw_b = decode_payload(b_data)[2]
+
+    ids_equal = ids_a == ids_b
+    constants_equal = const_a == const_b
+    lines_equal = lines_a == lines_b
+    columns_equal = cols_a == cols_b
+    tokens_equal = toks_a == toks_b
+    payload_equal = raw_a == raw_b
+    container_equal = a_data == b_data
+
+    out = [
+        'OPEN GDSC DIFFERENTIAL REPORT',
+        f'A: {a_path} ({len(a_data):,} bytes; SHA-256 {hashlib.sha256(a_data).hexdigest()[:16]})',
+        f'B: {b_path} ({len(b_data):,} bytes; SHA-256 {hashlib.sha256(b_data).hexdigest()[:16]})',
+        f'VERSION: A=v{ver_a}; B=v{ver_b}',
+        f'CONTAINER BYTE-IDENTICAL: {"YES" if container_equal else "NO"}',
+        f'DECODED PAYLOAD BYTE-IDENTICAL: {"YES" if payload_equal else "NO"}',
+        f'DECODED PAYLOAD SHA-256: A={hashlib.sha256(raw_a).hexdigest()[:16]}; B={hashlib.sha256(raw_b).hexdigest()[:16]}',
+        f'IDENTIFIERS: {len(ids_a)} vs {len(ids_b)}; equal={ids_equal}',
+        f'CONSTANTS: {len(const_a)} vs {len(const_b)}; equal={constants_equal}',
+        f'LINE MAPS: {len(lines_a)} vs {len(lines_b)}; equal={lines_equal}',
+        f'COLUMN MAPS: {len(cols_a)} vs {len(cols_b)}; equal={columns_equal}',
+        f'TOKENS: {len(toks_a)} vs {len(toks_b)}; equal={tokens_equal}',
+        '',
+    ]
+
+    if payload_equal:
+        out.append('RESULT: decoded GDSC data is identical; any file-level difference is container/compression representation only.')
+    elif ver_a != ver_b:
+        out.append('RESULT: bytecode versions differ; token-level comparison may not be meaningful across versions.')
+    else:
+        out.append('RESULT: decoded data differs; inspect the first differences below.')
+
+    if not ids_equal:
+        for i in range(min(max_differences, max(len(ids_a), len(ids_b)))):
+            av = ids_a[i] if i < len(ids_a) else '<missing>'
+            bv = ids_b[i] if i < len(ids_b) else '<missing>'
+            if av != bv:
+                out.append(f'IDENTIFIER DIFF [{i}]: A={av!r}; B={bv!r}')
+                break
+    if not constants_equal:
+        for i in range(min(max_differences, max(len(const_a), len(const_b)))):
+            av = const_a[i] if i < len(const_a) else '<missing>'
+            bv = const_b[i] if i < len(const_b) else '<missing>'
+            if av != bv:
+                out.append(f'CONSTANT DIFF [{i}]: A={_safe_variant_summary(av)}; B={_safe_variant_summary(bv)}')
+                break
+    if not lines_equal:
+        keys = sorted(set(lines_a) | set(lines_b))
+        emitted = 0
+        for index in keys:
+            av, bv = lines_a.get(index), lines_b.get(index)
+            if av != bv:
+                out.append(f'LINE MAP DIFF token[{index}]: A={av}; B={bv}')
+                emitted += 1
+                if emitted >= max_differences: break
+    if not columns_equal:
+        keys = sorted(set(cols_a) | set(cols_b))
+        emitted = 0
+        for index in keys:
+            av, bv = cols_a.get(index), cols_b.get(index)
+            if av != bv:
+                out.append(f'COLUMN MAP DIFF token[{index}]: A={av}; B={bv}')
+                emitted += 1
+                if emitted >= max_differences: break
+
+    if not tokens_equal:
+        differences = []
+        total = max(len(toks_a), len(toks_b))
+        for index in range(total):
+            ta = toks_a[index] if index < len(toks_a) else None
+            tb = toks_b[index] if index < len(toks_b) else None
+            if ta != tb:
+                differences.append((index, ta, tb))
+                if len(differences) >= max_differences:
+                    break
+        out.append('')
+        out.append(f'FIRST TOKEN DIFFERENCES (up to {max_differences}):')
+        for index, ta, tb in differences:
+            left = '<missing>' if ta is None else f'line={ta.line}, col={ta.column}, {_safe_token_summary(ta, ids_a, const_a)}'
+            right = '<missing>' if tb is None else f'line={tb.line}, col={tb.column}, {_safe_token_summary(tb, ids_b, const_b)}'
+            out.append(f'  token[{index}] A: {left}')
+            out.append(f'             B: {right}')
+    out.append('')
+    out.append('NOTE: matching decoded payloads prove binary identity, not identical container compression or game runtime behavior.')
+    return '\n'.join(out) + '\n'
 
 
 def format_bytes(size):
@@ -535,7 +872,11 @@ class Lexer:
             has_dec=True
         else: has_dec=False
         base=10
-        if raw.endswith('0') and self.peek() in 'xXbB':
+        # Use tuple membership for single-character lookahead. In Python,
+        # the empty string is considered a member of every string, so checks
+        # such as `self.peek() in 'eE'` misclassify end-of-input as an exponent.
+        # The same issue affected decimal integers ending in zero at EOF.
+        if raw.endswith('0') and self.peek() in ('x', 'X', 'b', 'B'):
             x=self.adv(); raw+=x; base=16 if x.lower()=='x' else 2
             while self.peek() and (self.peek().isdigit() or self.peek()=='_' or (base==16 and self.peek().lower() in 'abcdef')): raw+=self.adv()
         else:
@@ -544,9 +885,9 @@ class Lexer:
             if base==10 and self.peek()=='.' and self.peek(1)!='.':
                 has_dec=True; raw+=self.adv()
                 while self.peek() and (self.peek().isdigit() or self.peek()=='_'): raw+=self.adv()
-            if base==10 and self.peek() in 'eE':
+            if base==10 and self.peek() in ('e', 'E'):
                 has_dec=True; raw+=self.adv()
-                if self.peek() in '+-': raw+=self.adv()
+                if self.peek() in ('+', '-'): raw+=self.adv()
                 while self.peek() and (self.peek().isdigit() or self.peek()=='_'): raw+=self.adv()
         clean=raw.replace('_','')
         try:
@@ -571,12 +912,21 @@ class Lexer:
             if c=='\\':
                 self.adv()
                 if not self.peek(): raise ValueError('unterminated string')
-                esc=self.adv()
                 if raw:
-                    if esc==quote: out.extend(['\\',quote])
-                    elif esc=='\\': out.extend(['\\','\\'])
-                    else: out.append('\\')
+                    # Godot raw strings preserve backslash + ordinary character.
+                    # Only `\\` and an escaped matching quote are consumed as
+                    # pairs. For other characters, leave the lookahead in place
+                    # for the next loop iteration. The old code consumed it and
+                    # discarded it (e.g. r"\n" incorrectly became just "\\").
+                    esc=self.peek()
+                    if esc==quote or esc=='\\':
+                        self.adv()
+                        if not self.peek(): raise ValueError('unterminated string')
+                        out.extend(['\\',esc])
+                    else:
+                        out.append('\\')
                 else:
+                    esc=self.adv()
                     mp={'a':'\a','b':'\b','f':'\f','n':'\n','r':'\r','t':'\t','v':'\v',"'":"'",'"':'"','\\':'\\'}
                     if esc in mp: out.append(mp[esc])
                     elif esc in ('u','U'):
@@ -708,6 +1058,7 @@ def compile_gd(src, compress=True, tab_size=4):
     ids=[]; id_map={}; constants=[]; c_map={}
     token_bin=bytearray(); token_lines={}; token_cols={}; last_line=0
     for i,t in enumerate(toks):
+        _check_cancelled()
         typ=t.typ; tv=typ
         if typ in (T['ANNOTATION'],T['IDENTIFIER']):
             key=t.val
@@ -740,7 +1091,7 @@ def compile_gd(src, compress=True, tab_size=4):
     return b'GDSC'+struct.pack('<II',101,0)+content
 
 
-def process_one(mode,path,stdout=False):
+def process_one(mode,path,stdout=False,args=None):
     if mode=='info':return info_report(path)
     if mode=='hexdump':
         # Hexdump the decoded GDSC payload, not the compressed GDSC container.
@@ -748,6 +1099,9 @@ def process_one(mode,path,stdout=False):
         return hexdump(raw)
     decoded=decode_file(path)
     if mode=='dcmp':return reconstruct(decoded[1],decoded[2],decoded[3],decoded[4],decoded[5])
+    if mode=='dbg':
+        args = args or argparse.Namespace(breakpoint=[], show_tokens=False, context=4, max_tokens=200)
+        return dbg_report(path, decoded, breakpoints=args.breakpoint, show_tokens=args.show_tokens, context=args.context, max_tokens=args.max_tokens)
     if mode=='consts':return const_report(path,decoded)
     if mode=='disasm':return disasm_report(path,decoded)
     if mode=='audit':return audit_report(path,decoded)
@@ -769,6 +1123,10 @@ def compile_gd_file(src_path, dest_path, compressed=True, force=False, tab_size=
     decoded = decode_gdsc(output)
     if decoded[0] != 101:
         raise ValueError(f'compiler produced unsupported GDSC version {decoded[0]}')
+    structural_errors = [item for item in validate_gdc_structure(decoded) if item[0] == 'ERROR']
+    if structural_errors:
+        summary = '; '.join(f'{code}: {message}' for _severity, code, message, _index in structural_errors[:8])
+        raise ValueError(f'compiled GDSC failed structural validation: {summary}')
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = dest_path.with_name(dest_path.name + '.opengds-tmp')
@@ -824,16 +1182,42 @@ def run_comp(args, path):
 
 def main():
     ap=argparse.ArgumentParser(prog='OpenGDS')
-    ap.add_argument('mode',choices=['info','comp','dcmp','hexdump','audit','consts','disasm'])
+    ap.add_argument('--version', action='version', version='OpenGDS 1.0.2 - release')
+    ap.add_argument('mode',choices=['info','comp','dcmp','hexdump','audit','consts','disasm','dbg','diff'])
     ap.add_argument('path')
+    ap.add_argument('other',nargs='?',help='second GDC file for diff mode')
     ap.add_argument('-o','--output',help='output file for single-file input, or output root for folder input')
     ap.add_argument('--outdir',help='output root for folder input')
     ap.add_argument('--continue-on-error',action='store_true',help='continue recursive processing after a bad GDC')
     ap.add_argument('--tab-size',type=int,default=4,help='tab width used when measuring source columns (default: 4)')
     ap.add_argument('--no-compress',action='store_true',help='write uncompressed GDSC token data (comp only)')
     ap.add_argument('--force',action='store_true',help='overwrite existing comp output files')
+    ap.add_argument('-b','--breakpoint',dest='breakpoint',type=int,action='append',default=[],help='map a source-line breakpoint to its first GDSC token (dbg only; repeatable)')
+    ap.add_argument('--context',type=int,default=4,help='tokens of context around each mapped breakpoint (dbg only)')
+    ap.add_argument('--show-tokens',action='store_true',help='include a token listing in dbg output')
+    ap.add_argument('--max-tokens',type=int,default=200,help='maximum token rows shown by --show-tokens (dbg only)')
     args=ap.parse_args()
+    if args.context < 0 or args.max_tokens < 1:
+        raise SystemExit('ERROR: --context must be >= 0 and --max-tokens must be >= 1')
     p=Path(args.path)
+
+    if args.mode == 'diff':
+        if not args.other:
+            raise SystemExit('ERROR: diff requires two .gdc files: diff <file-a.gdc> <file-b.gdc>')
+        other = Path(args.other)
+        if not p.is_file() or not other.is_file():
+            raise SystemExit('ERROR: diff accepts two individual .gdc files, not folders')
+        try:
+            result = diff_report(p, other)
+        except Exception as error:
+            raise SystemExit(f'ERROR: diff: {error}')
+        if args.output:
+            Path(args.output).write_text(result, encoding='utf-8')
+        else:
+            print(result, end='')
+        return
+    if args.other:
+        raise SystemExit('ERROR: the second path argument is supported only by diff mode')
 
     if args.mode=='comp':
         try:
@@ -848,7 +1232,7 @@ def main():
         raise SystemExit(f'No {suffix} files found: {p}')
     is_folder=p.is_dir()
     if not is_folder:
-        try:result=process_one(args.mode,p)
+        try:result=process_one(args.mode,p,args=args)
         except Exception as e:
             raise SystemExit(f'ERROR: {p}: {e}')
         if args.output:Path(args.output).write_text(result,encoding='utf-8')
@@ -862,7 +1246,7 @@ def main():
     summaries=[]
     for f in files:
         try:
-            result=process_one(args.mode,f)
+            result=process_one(args.mode,f,args=args)
             if args.mode=='consts':
                 summaries.append(const_summary(f, decode_file(f)))
             elif args.mode=='audit':
@@ -870,6 +1254,7 @@ def main():
             rel=f.resolve().relative_to(base)
             if args.mode=='dcmp':ext='.gd'
             elif args.mode=='hexdump':ext='.hex'
+            elif args.mode=='dbg':ext='.dbg.txt'
             else:ext=f'.{args.mode}.txt'
             dest=(root/rel).with_suffix(ext)
             dest.parent.mkdir(parents=True,exist_ok=True)
