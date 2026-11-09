@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """OpenGDS / OGDS
-GDSC inspector/decompiler/compiler with native static debugging for Godot 4.x GDSC v101.
+GDSC inspector/decompiler/compiler with classic static and Godot-backed runtime debugging (GDSC v101).
 
 Usage:
   python3 OpenGDS.py info <file-or-folder>
@@ -10,7 +10,9 @@ Usage:
   python3 OpenGDS.py consts <file-or-folder>
   python3 OpenGDS.py audit <file-or-folder>
   python3 OpenGDS.py disasm <file-or-folder>
-  python3 OpenGDS.py dbg <file-or-folder> [--breakpoint LINE] [--show-tokens]
+  python3 OpenGDS.py dbg <file-or-folder> --classic [--breakpoint LINE] [--show-tokens]
+  python3 OpenGDS.py dbg <file.gdc> --interrupt --godot <executable> --project <project-dir>
+  python3 OpenGDS.py dbg <file.gdc> --godot <executable> --project <project-dir> [--breakpoint LINE]
   python3 OpenGDS.py diff <godot.gdc> <opengds.gdc>
 
 GDSC analysis modes accept .gdc files. comp accepts .gd files and uses
@@ -18,10 +20,11 @@ a native Python port of Godot 4.5 GDSC v101 tokenization/serialization. Folder i
 recursive. Folder outputs go under <folder>.<mode>/ by default.
 """
 from __future__ import annotations
-import argparse, ctypes, ctypes.util, hashlib, json, math, os, re, shutil, struct, subprocess, tempfile, zipfile
+import argparse, ctypes, ctypes.util, hashlib, json, math, os, re, shlex, shutil, struct, subprocess, sys, tempfile, zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import quote
 
 TOK = [
 "EMPTY","ANNOTATION","IDENTIFIER","LITERAL","LESS","LESS_EQUAL","GREATER","GREATER_EQUAL","EQUAL_EQUAL","BANG_EQUAL",
@@ -1091,6 +1094,257 @@ def compile_gd(src, compress=True, tab_size=4):
     return b'GDSC'+struct.pack('<II',101,0)+content
 
 
+
+# Startup callbacks are intentionally selected by default. Per-frame callbacks
+# can stop dozens of times per second, so they require an explicit opt-in.
+GDSCRIPT_STARTUP_LIFECYCLE = ('_static_init', '_init', '_enter_tree', '_ready')
+GDSCRIPT_FRAME_LIFECYCLE = (
+    '_process', '_physics_process', '_exit_tree', '_notification',
+    '_input', '_unhandled_input', '_unhandled_key_input', '_draw',
+)
+
+
+def discover_lifecycle_breakpoints(decoded, include_frame_callbacks=False):
+    """Find first executable token lines for Godot lifecycle methods in a GDC.
+
+    This is a token-level resolver, not a GDScript parser. It locates `func`,
+    reads the immediately following method identifier, balances signature
+    delimiters to find the declaration colon, then selects the first body token.
+    The resulting lines are passed to Godot's own debugger.
+    """
+    _version, identifiers, _constants, _line_map, _column_map, tokens = decoded
+    wanted = set(GDSCRIPT_STARTUP_LIFECYCLE)
+    if include_frame_callbacks:
+        wanted.update(GDSCRIPT_FRAME_LIFECYCLE)
+
+    t_func = TOK.index('FUNC')
+    t_identifier = TOK.index('IDENTIFIER')
+    t_colon = TOK.index('COLON')
+    t_eof = TOK.index('TK_EOF')
+    open_to_close = {
+        TOK.index('PARENTHESIS_OPEN'): TOK.index('PARENTHESIS_CLOSE'),
+        TOK.index('BRACKET_OPEN'): TOK.index('BRACKET_CLOSE'),
+        TOK.index('BRACE_OPEN'): TOK.index('BRACE_CLOSE'),
+    }
+    close_types = set(open_to_close.values())
+    skip_types = {TOK.index('NEWLINE'), TOK.index('INDENT'), TOK.index('DEDENT')}
+    found = []
+
+    for index, token in enumerate(tokens):
+        if token.typ != t_func or index + 1 >= len(tokens):
+            continue
+        name_token = tokens[index + 1]
+        if name_token.typ != t_identifier or name_token.arg >= len(identifiers):
+            continue
+        method_name = identifiers[name_token.arg]
+        if method_name not in wanted:
+            continue
+
+        stack = []
+        colon_index = None
+        for cursor in range(index + 2, len(tokens)):
+            kind = tokens[cursor].typ
+            if kind in open_to_close:
+                stack.append(open_to_close[kind])
+            elif kind in close_types:
+                if stack and stack[-1] == kind:
+                    stack.pop()
+                elif not stack:
+                    break
+            elif kind == t_colon and not stack:
+                colon_index = cursor
+                break
+            elif kind == t_eof:
+                break
+
+        if colon_index is None:
+            continue
+
+        body_token = None
+        for candidate in tokens[colon_index + 1:]:
+            if candidate.typ in skip_types:
+                continue
+            if candidate.typ == t_eof:
+                break
+            # A new declaration immediately after the colon means this method
+            # has no body token available in the stored stream.
+            if candidate.typ in (t_func, TOK.index('CLASS')):
+                break
+            body_token = candidate
+            break
+        if body_token is None:
+            continue
+
+        found.append({
+            'name': method_name,
+            'line': body_token.line,
+            'token_index': body_token.index,
+            'declaration_line': token.line,
+        })
+
+    # Preserve source order; duplicate callback names in inner classes remain
+    # separate breakpoints because they may have distinct execution contexts.
+    return sorted(found, key=lambda item: (item['line'], item['token_index']))
+
+
+def _resolve_godot_executable(value, require_exists=True):
+    raw = os.path.expandvars(os.path.expanduser(str(value)))
+    has_path = os.path.sep in raw or (os.path.altsep and os.path.altsep in raw)
+    resolved = str(Path(raw).resolve()) if has_path else shutil.which(raw)
+    if not resolved:
+        if require_exists:
+            raise FileNotFoundError(f'Godot executable not found: {value!r}')
+        return raw
+    candidate = Path(resolved)
+    if require_exists:
+        if not candidate.is_file():
+            raise FileNotFoundError(f'Godot executable is not a file: {candidate}')
+        if os.name != 'nt' and not os.access(candidate, os.X_OK):
+            raise PermissionError(f'Godot executable is not executable: {candidate}')
+    return str(candidate)
+
+
+def _resolve_godot_script_path(gdc_path, project_path, explicit_source_path=None):
+    if explicit_source_path:
+        resource_path = explicit_source_path.strip()
+        if not resource_path.startswith('res://'):
+            raise ValueError('--source-path must be a Godot resource path beginning with res://')
+        return resource_path
+
+    target = Path(gdc_path).resolve()
+    project = Path(project_path).resolve()
+    try:
+        relative = target.relative_to(project)
+    except ValueError as exc:
+        raise ValueError(
+            f'{target} is outside project {project}; provide --source-path res://path/to/script.gd'
+        ) from exc
+    if relative.suffix.lower() != '.gdc':
+        raise ValueError(f'--interrupt/--godot expects a .gdc target, got: {target.name}')
+    return 'res://' + relative.with_suffix('.gd').as_posix()
+
+
+def build_godot_debug_command(godot_executable, project_path, script_resource_path,
+                              breakpoint_lines, scene=None, headless=False,
+                              extra_args=()):
+    """Build a documented Godot CLI debug invocation (no shell interpolation)."""
+    encoded_source = quote(script_resource_path, safe='/._-:')
+    pairs = [f'{encoded_source}::{int(line)}' for line in sorted(set(breakpoint_lines))]
+    command = [str(godot_executable), '--path', str(Path(project_path).resolve()), '--debug']
+    if pairs:
+        command.append('--breakpoints=' + ','.join(pairs))
+    if headless:
+        command.append('--headless')
+    if scene:
+        command.extend(['--scene', str(scene)])
+    command.extend(str(arg) for arg in extra_args)
+    return command
+
+
+def run_godot_debugger(args, gdc_path):
+    """Launch the real Godot runtime debugger for a script in a project.
+
+    `--interrupt` adds automatic startup lifecycle breakpoints. Godot owns
+    execution, stack frames, locals and stepping; OpenGDS only resolves lines.
+    """
+    target = Path(gdc_path)
+    if not target.is_file() or target.suffix.lower() != '.gdc':
+        raise ValueError('Godot runtime debugging requires one existing .gdc file')
+    if not args.godot:
+        raise ValueError('runtime debugging requires --godot /path/to/Godot')
+    if not args.project:
+        raise ValueError('runtime debugging requires --project /path/to/project')
+
+    project = Path(args.project).expanduser().resolve()
+    if not project.is_dir() or not (project / 'project.godot').is_file():
+        raise FileNotFoundError(f'--project must contain project.godot: {project}')
+
+    source_path = _resolve_godot_script_path(target, project, args.source_path)
+    decoded = decode_file(target)
+    automatic = discover_lifecycle_breakpoints(
+        decoded, include_frame_callbacks=args.include_frame_callbacks
+    ) if args.interrupt else []
+    user_lines = [int(line) for line in (args.breakpoint or [])]
+    lines = sorted(set([item['line'] for item in automatic] + user_lines))
+    if any(line < 1 for line in lines):
+        raise ValueError('Godot breakpoint line numbers must be >= 1')
+    available_lines = sorted({token.line for token in decoded[5]})
+    unresolved = [line for line in user_lines if line not in set(available_lines)]
+    if unresolved:
+        details = []
+        for line in unresolved:
+            before = max((value for value in available_lines if value < line), default=None)
+            after = min((value for value in available_lines if value > line), default=None)
+            details.append(f'{line} (nearest previous={before}, next={after})')
+        raise ValueError('manual breakpoint line(s) have no token: ' + '; '.join(details))
+    if args.interrupt and not automatic and not args.breakpoint:
+        raise ValueError(
+            'no supported lifecycle methods were found in this GDC; '
+            'add --breakpoint LINE or use --godot for a normal runtime debug session'
+        )
+
+    godot = _resolve_godot_executable(args.godot, require_exists=not args.dry_run)
+    command = build_godot_debug_command(
+        godot, project, source_path, lines, scene=args.scene,
+        headless=args.headless, extra_args=args.godot_arg or (),
+    )
+
+    print('OPEN GDSC GODOT RUNTIME DEBUGGER')
+    print(f'TARGET GDC: {target.resolve()}')
+    print(f'PROJECT: {project}')
+    print(f'GODOT SOURCE: {source_path}')
+    if automatic:
+        print('LIFECYCLE BREAKPOINTS:')
+        for item in automatic:
+            print(f"  {item['name']} -> line {item['line']} (token #{item['token_index']})")
+    if args.breakpoint:
+        print('USER BREAKPOINTS: ' + ', '.join(str(x) for x in sorted(set(args.breakpoint))))
+    if args.include_frame_callbacks:
+        print('NOTICE: recurring callbacks are enabled; _process/_physics_process may pause repeatedly.')
+    print('BREAKPOINT COUNT: ' + str(len(lines)))
+    print('NOTE: the selected project scene must load this script for its breakpoints to be reached.')
+    print('COMMAND: ' + shlex.join(command))
+    print('ENGINE: Godot owns runtime execution and interactive debugging.')
+
+    if args.dry_run:
+        print('DRY RUN: Godot was not launched.')
+        return 0
+
+    version = subprocess.run(
+        [godot, '--version'], cwd=str(project), text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    version_text = (version.stdout or '').strip()
+    if version.returncode != 0:
+        raise RuntimeError(f'Godot --version failed (exit {version.returncode}): {version_text}')
+    if version_text:
+        print('GODOT VERSION: ' + version_text)
+
+    help_result = subprocess.run(
+        [godot, '--help'], cwd=str(project), text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    help_text = help_result.stdout or ''
+    if help_result.returncode != 0:
+        raise RuntimeError(f'Godot --help failed (exit {help_result.returncode})')
+    missing_debug_flags = [flag for flag in ('--debug', '--breakpoints') if flag not in help_text]
+    if missing_debug_flags:
+        raise RuntimeError(
+            'this Godot build does not advertise required debugger options: '
+            + ', '.join(missing_debug_flags)
+            + '. Use an editor/debug build, not a release export template.'
+        )
+
+    print('GODOT DEBUG SUPPORT: --debug and --breakpoints available')
+    print('Starting Godot. Use its local debugger prompt for continue/step/stack/locals.')
+    try:
+        completed = subprocess.run(command, cwd=str(project), check=False)
+    except KeyboardInterrupt:
+        print('\nOpenGDS: Godot debugging interrupted by user.', file=sys.stderr)
+        return 130
+    print(f'GODOT EXIT CODE: {completed.returncode}')
+    return int(completed.returncode)
+
 def process_one(mode,path,stdout=False,args=None):
     if mode=='info':return info_report(path)
     if mode=='hexdump':
@@ -1196,10 +1450,50 @@ def main():
     ap.add_argument('--context',type=int,default=4,help='tokens of context around each mapped breakpoint (dbg only)')
     ap.add_argument('--show-tokens',action='store_true',help='include a token listing in dbg output')
     ap.add_argument('--max-tokens',type=int,default=200,help='maximum token rows shown by --show-tokens (dbg only)')
+    dbg_modes = ap.add_mutually_exclusive_group()
+    dbg_modes.add_argument('--classic',action='store_true',help='use the original static GDSC debugger (default for dbg)')
+    dbg_modes.add_argument('--interrupt',action='store_true',help='auto-break at _static_init/_init/_enter_tree/_ready using the real Godot runtime; requires --godot and --project')
+    ap.add_argument('--godot',help='Godot executable path/name; enables real engine runtime debugging')
+    ap.add_argument('--project',help='Godot project directory containing project.godot')
+    ap.add_argument('--source-path',help='override target script resource path, usually res://scripts/player.gd')
+    ap.add_argument('--scene',help='scene to run, e.g. res://main.tscn (default: project main scene)')
+    ap.add_argument('--headless',action='store_true',help='pass --headless to Godot')
+    ap.add_argument('--include-frame-callbacks',action='store_true',help='also break in _process/_physics_process and other recurring callbacks')
+    ap.add_argument('--godot-arg',action='append',default=[],help='extra argument passed to Godot; repeatable')
+    ap.add_argument('--dry-run',action='store_true',help='show the Godot command and breakpoints without launching Godot')
     args=ap.parse_args()
     if args.context < 0 or args.max_tokens < 1:
         raise SystemExit('ERROR: --context must be >= 0 and --max-tokens must be >= 1')
     p=Path(args.path)
+
+    runtime_related = bool(
+        args.interrupt or args.godot or args.project or args.source_path or args.scene
+        or args.headless or args.include_frame_callbacks or args.godot_arg or args.dry_run
+    )
+    if args.mode != 'dbg' and (args.classic or runtime_related):
+        raise SystemExit('ERROR: debugger-specific options can only be used with the dbg command')
+
+    if args.mode == 'dbg':
+        runtime_requested = bool(args.interrupt or args.godot)
+        if args.classic and (args.godot or args.interrupt or args.dry_run or args.project or args.source_path or args.scene):
+            raise SystemExit('ERROR: --classic cannot be combined with Godot runtime options')
+        if args.include_frame_callbacks and not args.interrupt:
+            raise SystemExit('ERROR: --include-frame-callbacks requires --interrupt')
+        if not runtime_requested and (args.project or args.source_path or args.scene or args.headless or args.godot_arg):
+            raise SystemExit('ERROR: --project/--source-path/--scene/--headless/--godot-arg require --godot')
+        if args.dry_run and not runtime_requested:
+            raise SystemExit('ERROR: --dry-run is only valid with --interrupt or --godot')
+        if runtime_requested:
+            if args.path == '':
+                raise SystemExit('ERROR: runtime debugging requires a .gdc target file')
+            if p.is_dir():
+                raise SystemExit('ERROR: Godot runtime debugging accepts one .gdc file, not a folder')
+            try:
+                code = run_godot_debugger(args, p)
+            except Exception as error:
+                raise SystemExit(f'ERROR: Godot debugger: {error}')
+            raise SystemExit(code)
+        # No engine flag means classic mode, preserving the historical CLI.
 
     if args.mode == 'diff':
         if not args.other:
