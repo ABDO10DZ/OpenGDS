@@ -1,17 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#182b43"/>
-      <stop offset="1" stop-color="#0c1422"/>
-    </linearGradient>
-    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#70f0e2"/>
-      <stop offset="1" stop-color="#22a7df"/>
-    </linearGradient>
-  </defs>
-  <rect x="10" y="10" width="236" height="236" rx="48" fill="url(#bg)" stroke="#385a76" stroke-width="5"/>
-  <path d="M182 78a75 75 0 1 0 6 99" fill="none" stroke="url(#cyan)" stroke-width="23" stroke-linecap="round"/>
-  <path d="M128 128h62v28h-33" fill="none" stroke="#f2c66d" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="m61 105 27 23-27 23" fill="none" stroke="#d8e8f4" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>
-  <circle cx="191" cy="186" r="8" fill="#f2c66d"/>
-</svg>
+<svg id="icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" role="img" aria-label="Purple icon on a dark background">
+      <path fill="#171827" d="M0,0h48v48h-48z"/>
+      <path fill="#8B7CFF" d="M10,8h28v7h-21v18h21v7h-28z"/>
+      <path fill="#FFFFFF" d="M25,20h13v7h-13z"/>
+      <path fill="#FFFFFF" d="M25,31h13v4h-13z"/>
+    </svg>
