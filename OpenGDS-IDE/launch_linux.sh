@@ -10,7 +10,7 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 fi
 
 "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' || {
-  echo "ERROR: OpenGDS - IDE requires Python 3.10 or newer." >&2
+  echo "ERROR: OpenGDS-IDE requires Python 3.10 or newer." >&2
   exit 11
 }
 
@@ -27,5 +27,5 @@ if ! .venv/bin/python -c 'import PySide6.QtCore, PySide6.QtGui, PySide6.QtWidget
 fi
 
 .venv/bin/python -c 'import PySide6; from PySide6.QtWidgets import QApplication; from PySide6.QtNetwork import QTcpSocket; print("PySide6", PySide6.__version__, "OK")'
-echo "[3/3] Starting OpenGDS - IDE..."
+echo "[3/3] Starting OpenGDS-IDE..."
 exec .venv/bin/python main.py "$@"

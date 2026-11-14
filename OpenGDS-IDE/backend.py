@@ -1,24 +1,68 @@
 """Safe subprocess adapter for the OpenGDS.py command-line backend."""
 from __future__ import annotations
-import os, sys, subprocess, logging, re
+import os, sys, subprocess, logging, re, time, shutil
 from pathlib import Path
 
 from logging_system import log_event, log_directory, configure_logging
 
 class BackendError(RuntimeError): pass
 
+
+def is_frozen_app() -> bool:
+    """Detect PyInstaller frozen mode, including its one-file extraction runtime."""
+    return bool(getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"))
+
+
+def default_backend_path() -> Path:
+    """Return the embedded GUI executable or adjacent Python core by default."""
+    if is_frozen_app():
+        return Path(sys.executable).resolve()
+    return Path(__file__).with_name("OpenGDS.py").resolve()
+
+
+def find_python_command() -> list[str] | None:
+    """Find a real Python interpreter, excluding the frozen IDE executable."""
+    if not is_frozen_app():
+        return [sys.executable]
+    for candidate in ("python.exe", "python", "python3.exe", "python3"):
+        found = shutil.which(candidate)
+        if found:
+            return [found]
+    launcher = shutil.which("py.exe") or shutil.which("py")
+    if launcher:
+        return [launcher, "-3"]
+    return None
+
+
 class OpenGDSBackend:
-    def __init__(self, script: str | Path):
-        self.script = Path(script).expanduser().resolve()
+    def __init__(self, script: str | Path | None = None):
+        # Explicit paths always win, including in a frozen GUI. This lets users
+        # replace the embedded core with a standalone opengds-cli.exe or, when
+        # Python is installed, an updated OpenGDS.py file.
+        requested_path = Path(script).expanduser().resolve() if script is not None else None
+        running_exe = Path(sys.executable).resolve() if is_frozen_app() else None
+        self.embedded = bool(is_frozen_app() and (requested_path is None or requested_path == running_exe))
+        self.script = (default_backend_path() if requested_path is None else requested_path)
+        self.standalone_executable = (not self.embedded and self.script.suffix.lower() == ".exe")
+        self.python_command = None if self.standalone_executable or self.embedded else find_python_command()
         self.default_timeout = 300
-        if not self.script.is_file(): raise FileNotFoundError(f"OpenGDS backend not found: {self.script}")
+        if not self.embedded and not self.script.is_file():
+            raise FileNotFoundError(f"OpenGDS backend not found: {self.script}")
+        if not self.embedded and not self.standalone_executable and not self.python_command:
+            raise BackendError(
+                "OpenGDS.py requires a Python interpreter. Select opengds-cli.exe to run without Python."
+            )
         if not logging.getLogger("opengds").handlers:
-            configure_logging(log_directory() / "studio.log")
+            configure_logging(log_directory() / "opengds-ide.log")
 
     def command(self, *args: str) -> list[str]:
-        return [sys.executable, str(self.script), *map(str, args)]
+        if self.embedded:
+            return [str(sys.executable), "--opengds-cli", *map(str, args)]
+        if self.standalone_executable:
+            return [str(self.script), *map(str, args)]
+        return [*(self.python_command or [sys.executable]), str(self.script), *map(str, args)]
 
-    def run(self, *args: str, cwd: str | Path | None = None, timeout: int | None = None) -> subprocess.CompletedProcess:
+    def run(self, *args: str, cwd: str | Path | None = None, timeout: int | None = None, cancel_event=None) -> subprocess.CompletedProcess:
         command = self.command(*args)
         mode = str(args[0]) if args else "core"
         default_category = "GDSCRIPT" if mode == "comp" else ("GODOT_DEBUG" if mode == "dbg" else "GDSC")
@@ -27,10 +71,46 @@ class OpenGDSBackend:
         core_log_offset = core_log.stat().st_size if core_log.exists() else 0
         effective_timeout = self.default_timeout if timeout is None else timeout
         try:
-            result = subprocess.run(command, cwd=str(cwd) if cwd else None,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    timeout=effective_timeout, shell=False, env=os.environ.copy())
+            run_options = {}
+            if self.embedded and os.name == "nt":
+                # The application is a GUI-subsystem executable; prevent a
+                # transient console window when it re-launches itself as CLI.
+                run_options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if cancel_event is None:
+                result = subprocess.run(command, cwd=str(cwd) if cwd else None,
+                                        text=True, encoding="utf-8", errors="replace",
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        timeout=effective_timeout, shell=False, env=os.environ.copy(),
+                                        **run_options)
+            else:
+                process = subprocess.Popen(command, cwd=str(cwd) if cwd else None,
+                                           text=True, encoding="utf-8", errors="replace",
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           shell=False, env=os.environ.copy(), **run_options)
+                started = time.monotonic()
+                output = ""
+                while True:
+                    if cancel_event.is_set():
+                        process.terminate()
+                        try:
+                            output, _ = process.communicate(timeout=2.0)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            output, _ = process.communicate()
+                        log_event("BUILD", logging.WARNING,
+                                  f"OpenGDS subprocess cancelled by user: {command!r}")
+                        raise BackendError("OpenGDS operation cancelled by user.")
+                    elapsed = time.monotonic() - started
+                    if effective_timeout is not None and elapsed >= effective_timeout:
+                        process.kill()
+                        output, _ = process.communicate()
+                        raise subprocess.TimeoutExpired(command, effective_timeout, output=output)
+                    try:
+                        output, _ = process.communicate(timeout=0.15)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                result = subprocess.CompletedProcess(command, process.returncode, output)
         except subprocess.TimeoutExpired:
             log_event("PYTHON", logging.ERROR, f"OpenGDS subprocess timed out: {command!r}", exc_info=True)
             raise
@@ -39,7 +119,7 @@ class OpenGDSBackend:
             raise
 
         # The OpenGDS subprocess writes internal lexer/decoder/runtime traces to core.log.
-        # Merge only the newly appended records into the Studio log so they are visible
+        # Merge only the newly appended records into the OpenGDS-IDE log so they are visible
         # in the colored in-app viewer as well as remaining available in the raw core log.
         self._merge_core_log(core_log, core_log_offset)
 
@@ -85,28 +165,30 @@ class OpenGDSBackend:
             match = header.match(line)
             if match:
                 level_name, category, message = match.groups()
-                active_category = category if category in {"CORE", "GUI", "GODOT_ENGINE", "GODOT_ENGINE_ERR", "GODOT_DEBUG", "GDSCRIPT", "GDSC", "PYTHON", "LOGIC", "LSP", "DAP", "BUILD", "FILE", "SYSTEM"} else "CORE"
+                active_category = category if category in {"CORE", "GUI", "GODOT_ENGINE", "GODOT_ENGINE_ERR", "GODOT_DEBUG", "GDSCRIPT", "GDSC", "PYTHON", "LOGIC", "LSP", "DAP", "BUILD", "FILE", "AI", "GIT", "SYSTEM"} else "CORE"
                 active_level = getattr(logging, level_name, logging.INFO)
                 log_event(active_category, active_level, f"OpenGDS core: {message}")
             elif line.strip():
                 log_event(active_category, active_level, f"OpenGDS core trace: {line}")
 
     def compile(self, source: str | Path, output: str | Path | None = None,
-                compressed: bool = True, overwrite: bool = False, tab_size: int = 4, continue_on_error: bool = False) -> subprocess.CompletedProcess:
+                compressed: bool = True, overwrite: bool = False, tab_size: int = 4,
+                continue_on_error: bool = False, cancel_event=None) -> subprocess.CompletedProcess:
         args = ["comp", str(source), "--tab-size", str(tab_size)]
         if output: args += ["--output", str(output)]
         if not compressed: args.append("--no-compress")
         if overwrite: args.append("--force")
         if continue_on_error: args.append("--continue-on-error")
-        return self.run(*args)
+        return self.run(*args, cancel_event=cancel_event)
 
     def diff(self, first: str | Path, second: str | Path) -> str:
         return self.run("diff", str(first), str(second)).stdout
 
-    def decompile(self, binary: str | Path) -> str:
-        return self.run("dcmp", str(binary)).stdout
+    def decompile(self, binary: str | Path, *, cancel_event=None) -> str:
+        return self.run("dcmp", str(binary), cancel_event=cancel_event).stdout
 
-    def inspect(self, mode: str, path: str | Path, *, context: int = 4, show_tokens: bool = False, max_tokens: int = 200, breakpoints=()) -> str:
+    def inspect(self, mode: str, path: str | Path, *, context: int = 4, show_tokens: bool = False,
+                max_tokens: int = 200, breakpoints=(), cancel_event=None) -> str:
         if mode not in {"info", "hexdump", "audit", "consts", "disasm", "dbg"}:
             raise ValueError(f"Unsupported inspection mode: {mode}")
         args = [mode, str(path)]
@@ -114,7 +196,7 @@ class OpenGDSBackend:
             args += ["--classic", "--context", str(context), "--max-tokens", str(max_tokens)]
             if show_tokens: args.append("--show-tokens")
             for line in breakpoints: args += ["--breakpoint", str(int(line))]
-        return self.run(*args).stdout
+        return self.run(*args, cancel_event=cancel_event).stdout
 
     def runtime_debug_command(self, binary: str | Path, godot: str, project: str,
                               breakpoints=(), interrupt=False, scene="", headless=False,
@@ -133,10 +215,16 @@ class OpenGDSBackend:
         return self.command(*args)
 
     def install_update(self, new_script: str | Path) -> Path:
-        """Replace backend atomically, keeping a timestamped backup."""
-        import shutil, datetime
+        """Replace a source backend atomically; frozen core updates require a new EXE."""
+        if self.embedded:
+            raise BackendError("The OpenGDS core is embedded in this executable. Select a standalone opengds-cli.exe or configure an external OpenGDS.py core.")
+        import datetime
         source = Path(new_script).resolve()
         if not source.is_file(): raise FileNotFoundError(source)
+        if source.suffix.lower() != ".py":
+            raise ValueError("Atomic source-core updates accept OpenGDS.py files only; configure .exe files as standalone CLI backends.")
+        if self.script.suffix.lower() != ".py":
+            raise BackendError("The active backend is not a Python source file. Select an OpenGDS.py target first.")
         if source == self.script: raise ValueError("Selected backend is already active")
         log_event("CORE", logging.WARNING, f"Updating OpenGDS core: {source} -> {self.script}")
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")

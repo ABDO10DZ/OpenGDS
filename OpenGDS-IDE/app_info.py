@@ -1,6 +1,4 @@
-"""Central application identity and release metadata."""
-
-APP_NAME = "OpenGDS - IDE"
-VERSION = "1.0.2"
+"""Central application metadata for OpenGDS-IDE."""
+APP_NAME = "OpenGDS-IDE"
+VERSION = "1.0.3"
 DEVELOPER = "0xbytecode"
-

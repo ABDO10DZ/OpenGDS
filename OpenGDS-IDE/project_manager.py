@@ -1,4 +1,4 @@
-"""Versioned OpenGDS IDE workspace descriptors and recent-project history.
+"""Versioned OpenGDS-IDE workspace descriptors and recent-project history.
 
 A .ogds file is an IDE/workspace descriptor. It can accompany a Godot project
 (project.godot) but does not replace the engine's required project.godot file.
@@ -109,9 +109,9 @@ def load_project(path: str | Path) -> dict:
 
     data = json.loads(candidate.read_text(encoding="utf-8-sig"))
     if data.get("format") != PROJECT_FORMAT:
-        raise ValueError("Not an OpenGDS IDE project descriptor (expected format='opengds-project')")
+        raise ValueError("Not an OpenGDS-IDE project descriptor (expected format='opengds-project')")
     if int(data.get("version", 0)) > PROJECT_VERSION:
-        raise ValueError("This project was created by a newer OpenGDS IDE version")
+        raise ValueError("This project was created by a newer OpenGDS-IDE version")
 
     data = _deep_merge_defaults(data)
     root_value = Path(data.get("root") or ".").expanduser()

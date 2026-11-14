@@ -1,6 +1,59 @@
 from __future__ import annotations
-import json, os, shutil, sys, logging, html, subprocess, configparser
+import json, os, shutil, sys, logging, html, subprocess, configparser, traceback
 from pathlib import Path
+
+
+def _restore_embedded_cli_streams():
+    """Reattach redirected Win32 standard handles in a windowed PyInstaller child."""
+    if os.name != "nt" or (sys.stdout is not None and sys.stderr is not None):
+        return
+    try:
+        import ctypes
+        import io
+        import msvcrt
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetStdHandle.argtypes = [ctypes.c_ulong]
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
+        streams = (("stdin", -10, "rb"), ("stdout", -11, "wb"), ("stderr", -12, "wb"))
+        handles = {}
+        opened = {}
+        # Record already-initialized streams too, in case stdout or stderr is
+        # redirected to the same OS handle as a stream created by the bootloader.
+        for name, handle_id, _mode in streams:
+            handle = kernel32.GetStdHandle(handle_id & 0xFFFFFFFF)
+            if handle not in (None, 0, ctypes.c_void_p(-1).value):
+                handles[name] = int(handle)
+                existing = getattr(sys, name, None)
+                if existing is not None:
+                    opened[int(handle)] = existing
+        for name, _handle_id, mode in streams:
+            if getattr(sys, name, None) is not None:
+                continue
+            handle = handles.get(name)
+            if not handle:
+                continue
+            # stdout and stderr are often the same redirected pipe. Reuse one
+            # TextIOWrapper rather than closing the Win32 handle twice.
+            if handle in opened:
+                setattr(sys, name, opened[handle])
+                continue
+            flags = os.O_TEXT | (os.O_RDONLY if mode == "rb" else os.O_WRONLY)
+            fd = msvcrt.open_osfhandle(handle, flags)
+            raw = os.fdopen(fd, mode)
+            stream = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", line_buffering=True)
+            opened[handle] = stream
+            setattr(sys, name, stream)
+    except Exception:
+        # Preserve startup even when a parent did not provide redirected handles.
+        pass
+
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--opengds-cli":
+    _restore_embedded_cli_streams()
+    from OpenGDS import _logged_cli_main
+    sys.argv = ["OpenGDS.py", *sys.argv[2:]]
+    _logged_cli_main()
+    raise SystemExit(0)
 
 # Give a useful setup message when users invoke `python main.py` before installing
 # the GUI dependency. The Windows/Linux launchers create an isolated venv and
@@ -10,7 +63,7 @@ try:
 except ModuleNotFoundError as _qt_import_error:
     if (_qt_import_error.name or "").split(".", 1)[0] == "PySide6":
         _message = (
-            "\nOpenGDS - IDE cannot start because PySide6 is not installed.\n\n"
+            "\nOpenGDS-IDE cannot start because PySide6 is not installed.\n\n"
             "Recommended: run the launcher from this folder; it creates .venv and\n"
             "installs the required packages automatically:\n"
             "  Windows:  launch_windows.bat\n"
@@ -23,44 +76,211 @@ except ModuleNotFoundError as _qt_import_error:
     raise
 
 from PySide6.QtCore import Qt, QDir, QObject, QProcess, QSettings, QTimer, QUrl, QModelIndex, Signal, QThread, qInstallMessageHandler
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QFont, QTextCursor, QIcon, QBrush, QColor
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QFont, QTextCursor, QIcon, QBrush, QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTreeView,
-    QFileSystemModel, QTabWidget, QPlainTextEdit, QDockWidget, QToolBar,
+    QFileSystemModel, QTabWidget, QPlainTextEdit, QToolBar, QFrame,
     QStatusBar, QFileDialog, QMessageBox, QInputDialog, QDialog, QFormLayout,
     QLineEdit, QCheckBox, QSpinBox, QComboBox, QPushButton, QDialogButtonBox,
-    QListWidget, QListWidgetItem, QMenu, QToolButton, QLabel, QTextEdit
+    QListWidget, QListWidgetItem, QMenu, QToolButton, QLabel, QTextEdit, QStyledItemDelegate,
+    QScrollArea, QAbstractScrollArea, QDockWidget
 )
 
 from project_manager import create_project, load_project, save_project, History, workspace_from_directory
-from backend import OpenGDSBackend, BackendError
+from backend import OpenGDSBackend, BackendError, default_backend_path, is_frozen_app
 from editor import CodeEditor
 from language_service import extract_symbols, analyze_gdscript, project_symbols
 from lsp_client import GodotLanguageClient
 from dap_client import GodotDebugClient
-from logging_system import CATEGORY_COLORS, configure_logging, log_directory, log_event, install_exception_hooks
+from logging_system import CATEGORY_COLORS, configure_logging, close_logging, log_directory, log_event, install_exception_hooks
 from project_ops import compile_project, decompile_project, validate_project_with_godot as godot_validate_project, godot_check_command, OperationSummary, iter_project_files
 from archive_tools import read_pck, pck_report, extract_pck, zip_report, extract_zip, ArchiveError, looks_like_pck_or_executable
+from ai_panel import AIAgentDock
+from git_panel import GitDock
 from app_info import APP_NAME, VERSION, DEVELOPER
 
 DARK = """
-QMainWindow,QWidget { background:#1e1e1e; color:#d4d4d4; }
-QMenuBar,QMenu,QToolBar { background:#252526; color:#ddd; border:0; }
-QMenu::item:selected { background:#094771; }
-QTreeView,QListWidget,QPlainTextEdit,QTextEdit,QLineEdit,QComboBox,QSpinBox { background:#181818; color:#ddd; border:1px solid #3c3c3c; selection-background-color:#264f78; }
-QTabWidget::pane { border:1px solid #333; } QTabBar::tab { background:#2d2d2d; padding:8px 14px; } QTabBar::tab:selected { background:#1e1e1e; border-top:2px solid #007acc; }
-QPushButton { background:#333; border:1px solid #555; padding:6px 12px; } QPushButton:hover { background:#444; }
-QDockWidget::title { background:#252526; padding:6px; }
-QStatusBar { background:#007acc; color:white; }
+QMainWindow, QWidget { background:#10151d; color:#d9e1ec; font-family:'Segoe UI'; font-size:10pt; }
+QMenuBar, QToolBar { background:#171d27; color:#d9e1ec; border:0; spacing:4px; }
+QMenuBar::item { padding:7px 10px; background:transparent; border-radius:5px; }
+QMenuBar::item:selected, QMenu::item:selected { background:#26364b; color:#ffffff; }
+QMenu { background:#1b2430; color:#e6edf5; border:1px solid #344255; padding:5px; }
+QMenu::item { padding:7px 26px 7px 12px; border-radius:4px; }
+QMenu::separator { height:1px; background:#334155; margin:5px 8px; }
+QTreeView, QListWidget, QPlainTextEdit, QTextEdit, QLineEdit, QComboBox, QSpinBox {
+  background:#0d1219; color:#d9e1ec; border:1px solid #2c3746; border-radius:6px;
+  selection-background-color:#28466b; selection-color:#ffffff;
+}
+QTreeView { alternate-background-color:#131a23; border:0; outline:0; }
+QTreeView::item { padding:4px 3px; border-radius:3px; }
+QTreeView::item:hover, QListWidget::item:hover { background:#1c2a3a; }
+QTreeView::item:selected, QListWidget::item:selected { background:#223b59; color:#f0f6fc; }
+QListWidget { padding:5px; outline:0; }
+QListWidget::item { padding:7px 8px; margin:2px 0; border-radius:5px; }
+QLineEdit, QComboBox, QSpinBox { min-height:27px; padding:2px 8px; }
+QComboBox::drop-down { border:0; width:22px; }
+QComboBox QAbstractItemView { background:#17212e; color:#d9e1ec; selection-background-color:#28466b; border:1px solid #344255; }
+QPushButton, QToolButton { background:#202a37; color:#dce6f2; border:1px solid #354456; border-radius:7px; padding:6px 11px; }
+QPushButton:focus, QToolButton:focus, QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus { border:1px solid #559be4; }
+QPushButton:hover, QToolButton:hover { background:#2a394b; border-color:#4a617b; }
+QPushButton:pressed, QToolButton:pressed { background:#192637; }
+QPushButton:disabled { color:#697789; background:#1a2029; border-color:#29313d; }
+QPushButton#primaryButton { background:#2879d0; color:#ffffff; border:1px solid #398ee4; font-weight:650; }
+QPushButton#primaryButton:hover { background:#3489e3; }
+QToolButton#overflowButton { font-size:20px; font-weight:700; min-width:30px; max-width:34px; min-height:28px; padding:0; }
+QToolBar { padding:4px 7px; border-bottom:1px solid #263344; }
+QToolBar QToolButton { border:0; padding:6px 9px; }
+QTabWidget::pane { border:1px solid #2a3747; border-radius:6px; top:-1px; }
+QTabBar::tab { background:#19212c; color:#9eacbe; padding:8px 14px; border:0; border-bottom:2px solid transparent; }
+QTabBar::tab:selected { color:#edf4fc; background:#121923; border-bottom:2px solid #4d9bea; }
+QTabBar::tab:hover { color:#ffffff; background:#202c3a; }
+QStatusBar { background:#17202c; color:#adbbcd; border-top:1px solid #2a394b; }
+QStatusBar::item { border:0; }
+QDockWidget { border:1px solid #2a394b; }
+QMainWindow::separator { background:#2a3c51; width:9px; height:9px; margin:0; }
+QMainWindow::separator:horizontal { height:9px; min-height:9px; max-height:9px; border-top:1px solid #405873; border-bottom:1px solid #0b1119; }
+QMainWindow::separator:vertical { width:9px; min-width:9px; max-width:9px; border-left:1px solid #405873; border-right:1px solid #0b1119; }
+QMainWindow::separator:hover { background:#2879d0; border-color:#8bc0f0; }
+QMainWindow::separator:pressed { background:#559be4; border-color:#d5eaff; }
+QWidget#dockTitleBar { background:#171d27; border-bottom:1px solid #2a394b; }
+QLabel#dockTitleLabel { color:#d9e1ec; font-weight:650; padding-left:2px; }
+QToolButton#dockFloatButton, QToolButton#dockCloseButton { background:transparent; border:1px solid transparent; border-radius:4px; min-width:22px; max-width:22px; min-height:22px; max-height:22px; padding:0; font-size:14px; font-weight:700; }
+QToolButton#dockFloatButton:hover { background:#263e57; border-color:#3b5878; }
+QToolButton#dockCloseButton:hover { background:#5a2930; border-color:#98434d; color:#ffffff; }
+QScrollBar:vertical { background:#121b27; width:10px; margin:2px 1px; border:0; border-radius:5px; }
+QScrollBar::handle:vertical { background:#40536a; min-height:30px; min-width:6px; border-radius:4px; margin:1px; }
+QScrollBar::handle:vertical:hover { background:#6684a6; }
+QScrollBar::handle:vertical:pressed { background:#83a8cf; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; width:0; border:0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }
+QScrollBar:horizontal { background:#121b27; height:10px; margin:1px 2px; border:0; border-radius:5px; }
+QScrollBar::handle:horizontal { background:#40536a; min-width:30px; min-height:6px; border-radius:4px; margin:1px; }
+QScrollBar::handle:horizontal:hover { background:#6684a6; }
+QScrollBar::handle:horizontal:pressed { background:#83a8cf; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { height:0; width:0; border:0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background:transparent; }
+QAbstractScrollArea::corner { background:#111822; }
+QTextBrowser#assistantTranscript { background:#111822; color:#dce5ef; border:0; padding:4px; }
+QScrollBar#assistantChatScrollBar, QScrollBar#assistantChangesScrollBar, QScrollBar#assistantComposerScrollBar {
+  width:12px; background:#0e1620; margin:2px 1px; border:1px solid #26384b; border-radius:6px;
+}
+QScrollBar#assistantChatScrollBar::handle:vertical, QScrollBar#assistantChangesScrollBar::handle:vertical, QScrollBar#assistantComposerScrollBar::handle:vertical {
+  background:#506a86; min-height:34px; min-width:7px; border-radius:5px; margin:1px;
+}
+QScrollBar#assistantChatScrollBar::handle:vertical:hover, QScrollBar#assistantChangesScrollBar::handle:vertical:hover, QScrollBar#assistantComposerScrollBar::handle:vertical:hover { background:#78a2cc; }
+QScrollBar#assistantChatScrollBar::handle:vertical:pressed, QScrollBar#assistantChangesScrollBar::handle:vertical:pressed, QScrollBar#assistantComposerScrollBar::handle:vertical:pressed { background:#96c2ed; }
+QLabel#panelTitle { color:#e7eef8; font-size:12px; font-weight:750; letter-spacing:1px; }
+QFrame#workspacePanelHeader { background:#171e29; border-bottom:1px solid #2b394b; }
+QWidget#workspacePanelBody { background:#10151d; }
+QLabel#sectionEyebrow { color:#8292a6; font-size:10px; font-weight:750; letter-spacing:1.3px; }
+QLabel#mutedHint { color:#8797aa; font-size:11px; }
+QLabel#contextSummary { color:#9eb1c8; background:#182434; border:1px solid #2b4058; border-radius:6px; padding:4px 8px; font-size:10px; }
+QLabel#statusPill { color:#a9d1ff; background:#1c3550; border:1px solid #294d70; border-radius:10px; padding:3px 8px; font-weight:650; }
+QLabel#gitSummary { color:#9aaabd; }
+QLabel#branchSummary { color:#a9c9ed; font-weight:650; padding:2px 0; }
+QWidget#sourceControlPanel, QWidget#aiAssistantPanel { background:#111822; }
+QWidget#assistantComposer { background:#151f2c; border:1px solid #2b3a4d; border-radius:12px; }
+QComboBox#focusPicker, QComboBox#taskPicker { background:#182433; border:1px solid #304257; min-height:30px; }
+QTabBar::tab { min-width:64px; }
+QPlainTextEdit#assistantPrompt { background:#0d141d; border:0; border-radius:7px; padding:8px; }
+QListWidget#gitChangesList::item { padding:7px 8px; border-radius:5px; }
+QListWidget#agentChangeList::item { padding:9px; border-bottom:1px solid #283546; }
+QPushButton#contextChip { background:#1b2c40; color:#9ac5f7; border:1px solid #304966; border-radius:14px; padding:5px 10px; }
+QPushButton#contextChip:checked { background:#254a70; color:#ffffff; }
+QPushButton#pendingBadge { color:#a9d1ff; background:#1c3550; border:1px solid #294d70; border-radius:12px; padding:5px 10px; font-weight:700; }
+QPushButton#pendingBadge:hover { background:#264969; border-color:#477eae; }
+QPushButton#pendingBadge:disabled { color:#8292a6; background:#192330; border-color:#2a3747; }
+QPlainTextEdit#diffPreview { font-family:Consolas, 'Cascadia Code', monospace; }
 """
 LIGHT = """
-QMainWindow,QWidget { background:#f5f5f5; color:#222; }
-QMenuBar,QMenu,QToolBar { background:#ededed; color:#222; border:0; }
-QTreeView,QListWidget,QPlainTextEdit,QTextEdit,QLineEdit,QComboBox,QSpinBox { background:white; color:#222; border:1px solid #bbb; selection-background-color:#cce5ff; }
-QTabWidget::pane { border:1px solid #bbb; } QTabBar::tab { background:#e5e5e5; padding:8px 14px; } QTabBar::tab:selected { background:white; border-top:2px solid #007acc; }
-QPushButton { background:#eee; border:1px solid #aaa; padding:6px 12px; } QDockWidget::title { background:#e5e5e5; padding:6px; }
-QStatusBar { background:#007acc; color:white; }
+QMainWindow, QWidget { background:#f4f7fb; color:#202b38; font-family:'Segoe UI'; font-size:10pt; }
+QMenuBar, QToolBar { background:#ffffff; color:#273444; border:0; spacing:4px; }
+QMenuBar::item { padding:7px 10px; background:transparent; border-radius:5px; }
+QMenuBar::item:selected, QMenu::item:selected { background:#e2edf9; color:#14263b; }
+QMenu { background:#ffffff; color:#202b38; border:1px solid #d5deea; padding:5px; }
+QMenu::item { padding:7px 26px 7px 12px; border-radius:4px; }
+QMenu::separator { height:1px; background:#e0e6ee; margin:5px 8px; }
+QTreeView, QListWidget, QPlainTextEdit, QTextEdit, QLineEdit, QComboBox, QSpinBox {
+  background:#ffffff; color:#202b38; border:1px solid #d4dde8; border-radius:6px;
+  selection-background-color:#d8eaff; selection-color:#172b43;
+}
+QTreeView { alternate-background-color:#f7f9fc; border:0; outline:0; }
+QTreeView::item { padding:4px 3px; border-radius:3px; }
+QTreeView::item:hover, QListWidget::item:hover { background:#edf3fa; }
+QTreeView::item:selected, QListWidget::item:selected { background:#dceafa; color:#142c48; }
+QListWidget { padding:5px; outline:0; }
+QListWidget::item { padding:7px 8px; margin:2px 0; border-radius:5px; }
+QLineEdit, QComboBox, QSpinBox { min-height:27px; padding:2px 8px; }
+QComboBox::drop-down { border:0; width:22px; }
+QComboBox QAbstractItemView { background:#ffffff; color:#202b38; selection-background-color:#dceafa; border:1px solid #d4dde8; }
+QPushButton, QToolButton { background:#f4f7fb; color:#253447; border:1px solid #cbd6e3; border-radius:7px; padding:6px 11px; }
+QPushButton:focus, QToolButton:focus, QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus { border:1px solid #3988cf; }
+QPushButton:hover, QToolButton:hover { background:#eaf1f8; border-color:#a8bdd4; }
+QPushButton:pressed, QToolButton:pressed { background:#dce8f5; }
+QPushButton:disabled { color:#9ba7b5; background:#f5f7fa; border-color:#e0e6ed; }
+QPushButton#primaryButton { background:#176fc1; color:#ffffff; border:1px solid #176fc1; font-weight:650; }
+QPushButton#primaryButton:hover { background:#0f61ad; }
+QToolButton#overflowButton { font-size:20px; font-weight:700; min-width:30px; max-width:34px; min-height:28px; padding:0; }
+QToolBar { padding:4px 7px; border-bottom:1px solid #dbe3ed; }
+QToolBar QToolButton { border:0; padding:6px 9px; }
+QTabWidget::pane { border:1px solid #d8e1eb; border-radius:6px; top:-1px; }
+QTabBar::tab { background:#edf2f7; color:#637287; padding:8px 14px; border:0; border-bottom:2px solid transparent; }
+QTabBar::tab:selected { color:#20364f; background:#ffffff; border-bottom:2px solid #267dcc; }
+QTabBar::tab:hover { color:#172c45; background:#e4edf6; }
+QStatusBar { background:#ffffff; color:#607187; border-top:1px solid #dbe3ed; }
+QStatusBar::item { border:0; }
+QDockWidget { border:1px solid #d4dde8; }
+QMainWindow::separator { background:#d6e0ec; width:9px; height:9px; margin:0; }
+QMainWindow::separator:horizontal { height:9px; min-height:9px; max-height:9px; border-top:1px solid #b2c1d3; border-bottom:1px solid #f8fbff; }
+QMainWindow::separator:vertical { width:9px; min-width:9px; max-width:9px; border-left:1px solid #b2c1d3; border-right:1px solid #f8fbff; }
+QMainWindow::separator:hover { background:#9ac7ed; border-color:#3988cf; }
+QMainWindow::separator:pressed { background:#3988cf; border-color:#176fc1; }
+QWidget#dockTitleBar { background:#f0f3f8; border-bottom:1px solid #d4dde8; }
+QLabel#dockTitleLabel { color:#243246; font-weight:650; padding-left:2px; }
+QToolButton#dockFloatButton, QToolButton#dockCloseButton { background:transparent; border:1px solid transparent; border-radius:4px; min-width:22px; max-width:22px; min-height:22px; max-height:22px; padding:0; font-size:14px; font-weight:700; color:#34465c; }
+QToolButton#dockFloatButton:hover { background:#dceafa; border-color:#b8d2ee; }
+QToolButton#dockCloseButton:hover { background:#f8dfe2; border-color:#e7aeb6; color:#8d2632; }
+QScrollBar:vertical { background:#e9eff6; width:10px; margin:2px 1px; border:0; border-radius:5px; }
+QScrollBar::handle:vertical { background:#a9b9cb; min-height:30px; min-width:6px; border-radius:4px; margin:1px; }
+QScrollBar::handle:vertical:hover { background:#829bb7; }
+QScrollBar::handle:vertical:pressed { background:#6e89a8; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; width:0; border:0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }
+QScrollBar:horizontal { background:#e9eff6; height:10px; margin:1px 2px; border:0; border-radius:5px; }
+QScrollBar::handle:horizontal { background:#a9b9cb; min-width:30px; min-height:6px; border-radius:4px; margin:1px; }
+QScrollBar::handle:horizontal:hover { background:#829bb7; }
+QScrollBar::handle:horizontal:pressed { background:#6e89a8; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { height:0; width:0; border:0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background:transparent; }
+QAbstractScrollArea::corner { background:#f4f7fb; }
+QTextBrowser#assistantTranscript { background:#ffffff; color:#202b38; border:0; padding:4px; }
+QScrollBar#assistantChatScrollBar, QScrollBar#assistantChangesScrollBar, QScrollBar#assistantComposerScrollBar {
+  width:12px; background:#edf2f7; margin:2px 1px; border:1px solid #ccd7e3; border-radius:6px;
+}
+QScrollBar#assistantChatScrollBar::handle:vertical, QScrollBar#assistantChangesScrollBar::handle:vertical, QScrollBar#assistantComposerScrollBar::handle:vertical {
+  background:#91a8c0; min-height:34px; min-width:7px; border-radius:5px; margin:1px;
+}
+QScrollBar#assistantChatScrollBar::handle:vertical:hover, QScrollBar#assistantChangesScrollBar::handle:vertical:hover, QScrollBar#assistantComposerScrollBar::handle:vertical:hover { background:#6685a7; }
+QScrollBar#assistantChatScrollBar::handle:vertical:pressed, QScrollBar#assistantChangesScrollBar::handle:vertical:pressed, QScrollBar#assistantComposerScrollBar::handle:vertical:pressed { background:#4f739b; }
+QLabel#panelTitle { color:#25364a; font-size:12px; font-weight:750; letter-spacing:1px; }
+QLabel#sectionEyebrow { color:#718197; font-size:10px; font-weight:750; letter-spacing:1.3px; }
+QLabel#mutedHint { color:#718197; font-size:11px; }
+QLabel#contextSummary { color:#536a84; background:#edf3f9; border:1px solid #d8e3ef; border-radius:6px; padding:4px 8px; font-size:10px; }
+QLabel#statusPill { color:#205c91; background:#e8f3ff; border:1px solid #c9e2fa; border-radius:10px; padding:3px 8px; font-weight:650; }
+QLabel#gitSummary { color:#718197; }
+QLabel#branchSummary { color:#315f8b; font-weight:650; padding:2px 0; }
+QWidget#sourceControlPanel, QWidget#aiAssistantPanel { background:#f4f7fb; }
+QWidget#assistantComposer { background:#ffffff; border:1px solid #d6e0eb; border-radius:12px; }
+QComboBox#focusPicker, QComboBox#taskPicker { background:#f8fafd; border:1px solid #d1dce8; min-height:30px; }
+QTabBar::tab { min-width:64px; }
+QPlainTextEdit#assistantPrompt { background:#fbfcfe; border:0; border-radius:7px; padding:8px; }
+QListWidget#gitChangesList::item { padding:7px 8px; border-radius:5px; }
+QListWidget#agentChangeList::item { padding:9px; border-bottom:1px solid #e3e9f0; }
+QPushButton#contextChip { background:#eaf3fc; color:#25659a; border:1px solid #d0e3f5; border-radius:14px; padding:5px 10px; }
+QPushButton#contextChip:checked { background:#d9eafc; color:#174e7e; }
+QPlainTextEdit#diffPreview { font-family:Consolas, 'Cascadia Code', monospace; }
 """
+
 
 
 class LogSignal(QObject):
@@ -116,6 +336,185 @@ class ColorFileSystemModel(QFileSystemModel):
         return super().data(index, role)
 
 
+class DockTitleBar(QWidget):
+    """Compact dock title bar with explicit float/restore and close controls.
+
+    Unhandled mouse events are ignored deliberately so QDockWidget receives
+    them and performs its native title-bar drag, float and redock behavior.
+    """
+
+    def __init__(self, dock: QDockWidget, parent=None):
+        super().__init__(parent or dock)
+        self.dock = dock
+        self.setObjectName("dockTitleBar")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 4, 2)
+        layout.setSpacing(4)
+        self.title_label = QLabel(dock.windowTitle(), self)
+        self.title_label.setObjectName("dockTitleLabel")
+        layout.addWidget(self.title_label, 1)
+        self.float_button = QToolButton(self)
+        self.float_button.setObjectName("dockFloatButton")
+        self.float_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.float_button.setToolTip("Move panel into a separate window")
+        self.float_button.setAccessibleName("Float or restore panel")
+        self.float_button.clicked.connect(self._toggle_floating)
+        layout.addWidget(self.float_button, 0)
+        self.close_button = QToolButton(self)
+        self.close_button.setObjectName("dockCloseButton")
+        self.close_button.setText("×")
+        self.close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.close_button.setToolTip("Hide panel — reopen it from View → Panels")
+        self.close_button.setAccessibleName("Close panel")
+        self.close_button.clicked.connect(dock.close)
+        layout.addWidget(self.close_button, 0)
+        dock.windowTitleChanged.connect(self.title_label.setText)
+        dock.topLevelChanged.connect(self._update_float_button)
+        self._update_float_button(dock.isFloating())
+
+    def _toggle_floating(self):
+        self.dock.setFloating(not self.dock.isFloating())
+        self.dock.show()
+        self.dock.raise_()
+
+    def _update_float_button(self, floating: bool):
+        self.float_button.setText("↙" if floating else "↗")
+        self.float_button.setToolTip(
+            "Dock panel back into the IDE" if floating
+            else "Move panel into a separate window"
+        )
+
+    def mousePressEvent(self, event):
+        # Let the QDockWidget parent start native docking/undocking drags.
+        event.ignore()
+
+    def mouseMoveEvent(self, event):
+        event.ignore()
+
+    def mouseDoubleClickEvent(self, event):
+        event.ignore()
+
+
+class WorkspacePanel(QWidget):
+    """Panel content wrapper hosted by a native PySide6 QDockWidget."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setObjectName("workspacePanel")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        header = QFrame(self)
+        self.header = header
+        header.setObjectName("workspacePanelHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(10, 7, 10, 7)
+        header_layout.setSpacing(6)
+        self.title_label = QLabel(title, header)
+        self.title_label.setObjectName("panelTitle")
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch(1)
+        self.body = QWidget(self)
+        self.body.setObjectName("workspacePanelBody")
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(0)
+        outer.addWidget(header, 0)
+        outer.addWidget(self.body, 1)
+        self._content = None
+
+    def setHeaderVisible(self, visible: bool):
+        """Show the embedded header only when this panel is not in a dock."""
+        self.header.setVisible(bool(visible))
+
+    def setWidget(self, widget: QWidget):
+        if self._content is not None:
+            self.body_layout.removeWidget(self._content)
+            self._content.setParent(None)
+        self._content = widget
+        widget.setParent(self.body)
+        self.body_layout.addWidget(widget, 1)
+
+    def widget(self):
+        return self._content
+
+
+class GitStatusDelegate(QStyledItemDelegate):
+    """Overlay compact Git state dots in the explorer without replacing icons."""
+    STAGED = "#63c18c"
+    UNSTAGED = "#e8b45e"
+    UNTRACKED = "#65aaf0"
+    CONFLICT = "#ef737d"
+    INACTIVE = "#455365"
+
+    def __init__(self, view, workspace_getter, parent=None):
+        super().__init__(parent or view)
+        self.view = view
+        self.workspace_getter = workspace_getter
+        self.status_map: dict[str, str] = {}
+
+    def set_status(self, mapping):
+        self.status_map = {
+            str(path).replace("\\", "/"): str(status)
+            for path, status in dict(mapping or {}).items()
+        }
+        self.view.viewport().update()
+
+    @staticmethod
+    def _flags(statuses):
+        staged = any(status[:1] not in {" ", "?"} for status in statuses)
+        unstaged = any(status[1:2] != " " or status == "??" for status in statuses)
+        untracked = any(status == "??" for status in statuses)
+        conflict = any("U" in status or status in {"AA", "DD"} for status in statuses)
+        return staged, unstaged, untracked, conflict
+
+    def _state_for(self, index):
+        if not self.status_map or not index.isValid() or index.column() != 0:
+            return None
+        try:
+            workspace = Path(self.workspace_getter()).resolve()
+            path = Path(os.path.abspath(self.view.model().filePath(index)))
+            relative = path.relative_to(workspace).as_posix()
+        except (TypeError, ValueError, OSError):
+            return None
+        direct = self.status_map.get(relative)
+        if direct is not None:
+            statuses = [direct]
+        elif path.is_dir():
+            prefix = "" if relative == "." else relative.rstrip("/") + "/"
+            statuses = [value for key, value in self.status_map.items() if not prefix or key.startswith(prefix)]
+        else:
+            statuses = []
+        return self._flags(statuses) if statuses else None
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        state = self._state_for(index)
+        if not state:
+            return
+        staged, unstaged, untracked, conflict = state
+        third = self.CONFLICT if conflict else self.UNTRACKED if untracked else self.INACTIVE
+        colors = (
+            self.STAGED if staged else self.INACTIVE,
+            self.UNSTAGED if unstaged else self.INACTIVE,
+            third,
+        )
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        radius = 2.3
+        center_y = option.rect.center().y()
+        start_x = option.rect.right() - 20
+        for offset, color in enumerate(colors):
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawEllipse(
+                int(start_x + offset * 6 - radius),
+                int(center_y - radius),
+                int(radius * 2), int(radius * 2),
+            )
+        painter.restore()
+
 
 class SettingsDialog(QDialog):
     def __init__(self, settings, project, parent=None):
@@ -135,8 +534,12 @@ class SettingsDialog(QDialog):
         self.fontsize = QSpinBox(); self.fontsize.setRange(8, 32); self.fontsize.setValue(int(settings.value("font_size", 11)))
         self.autosave = QCheckBox("Automatically save modified files"); self.autosave.setChecked(settings.value("autosave", "true") == "true")
         self.tabwidth = QSpinBox(); self.tabwidth.setRange(1, 8); self.tabwidth.setValue(int(settings.value("tab_width", 4)))
-        self.backend = QLineEdit(settings.value("backend_path", str(Path(__file__).with_name("OpenGDS.py"))))
-        backend_button = QPushButton("Browse…"); backend_button.clicked.connect(lambda: self.pick(self.backend, "Python backend (*.py)"))
+        self.backend = QLineEdit("Bundled inside this executable" if is_frozen_app()
+                                  else settings.value("backend_path", str(default_backend_path())))
+        self.backend.setReadOnly(is_frozen_app())
+        backend_button = QPushButton("Browse…")
+        backend_button.setEnabled(not is_frozen_app())
+        backend_button.clicked.connect(lambda: self.pick(self.backend, "Python backend (*.py)"))
         backend_row = QHBoxLayout(); backend_row.addWidget(self.backend); backend_row.addWidget(backend_button)
         backend_widget = QWidget(); backend_widget.setLayout(backend_row)
         self.godot = QLineEdit(settings.value("godot_path", ""))
@@ -145,7 +548,7 @@ class SettingsDialog(QDialog):
         godot_widget = QWidget(); godot_widget.setLayout(godot_row)
         form.addRow("Appearance", self.theme); form.addRow("Editor font", self.font); form.addRow("Font size", self.fontsize)
         form.addRow("Tab width", self.tabwidth); form.addRow("Autosave", self.autosave)
-        form.addRow("OpenGDS.py path", backend_widget); form.addRow("Godot executable (legacy CLI)", godot_widget)
+        form.addRow("OpenGDS core", backend_widget); form.addRow("Godot executable (legacy CLI)", godot_widget)
         tabs.addTab(general, "General")
 
         editor_page = QWidget(); ef = QFormLayout(editor_page)
@@ -273,12 +676,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {VERSION} — GDScript IDE")
-        icon_file = Path(__file__).with_name("assets") / "opengds-ide.svg"
+        icon_file = Path(__file__).with_name("assets") / "opengds-ide.ico"
         if icon_file.is_file():
             self.setWindowIcon(QIcon(str(icon_file)))
         self.resize(1520, 960)
         self.settings = QSettings("OpenGDS", "IDE")
-        self.log_path = configure_logging(log_directory() / "studio.log")
+        self.log_path = configure_logging(log_directory() / "opengds-ide.log")
         self.log_signal = LogSignal(self)
         self.log_signal.record.connect(self.render_log_record)
         self.qt_log_handler = QtLogHandler(self.log_signal.record)
@@ -305,18 +708,25 @@ class MainWindow(QMainWindow):
         self.server_insertions: dict[str, str] = {}
         self.workspace_completions: list[str] = []
         self.godot_process: QProcess | None = None
-        appdata = Path.home() / ".opengds-studio"
+        appdata = Path.home() / ".opengds-ide"
         self.history = History(appdata / "history.json")
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMovable(True)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setTabBarAutoHide(False)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideMiddle)
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self.tab_changed)
-        self.setCentralWidget(self.tabs)
-
+        self.tabs.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._tab_context_menu)
         self._make_docks()
         qInstallMessageHandler(self._qt_message_handler)
         log_event("GUI", logging.INFO, f"{APP_NAME} {VERSION} session started; IDE log: {self.log_path}")
+        log_event("GUI", logging.INFO, "Log console initialized and ready")
         log_event("CORE", logging.INFO, f"OpenGDS core log directory: {log_directory()}")
         self._make_actions()
         self._make_toolbar()
@@ -349,12 +759,49 @@ class MainWindow(QMainWindow):
         self.analysis_timer.timeout.connect(self.refresh_language_tools)
 
     def restore_geometry(self):
+        """Restore the main window and native QDockWidget layout state."""
         geometry = self.settings.value("geometry")
         if geometry:
             self.restoreGeometry(geometry)
 
+        try:
+            version = int(self.settings.value("dock_layout_version", 2))
+        except (TypeError, ValueError):
+            version = 0
+        state = self.settings.value("dock_state") if version == 2 else None
+        restored = False
+        if state:
+            try:
+                restored = bool(self.restoreState(state, 5))
+            except (TypeError, RuntimeError):
+                restored = False
+
+        if not restored:
+            # Older splitter layouts are intentionally not interpreted as a
+            # dock layout. Start from the well-defined default arrangement.
+            self.settings.remove("dock_state")
+            self.settings.setValue("dock_layout_version", 2)
+            self.restore_default_dock_layout(show_message=False)
+        else:
+            self.settings.setValue("dock_layout_version", 2)
+            # Qt restores visibility, tabification and floating-window
+            # geometry as part of QMainWindow state. Rebuild last-known dock
+            # areas so the explicit Dock Back commands use the restored layout.
+            QTimer.singleShot(0, self._sync_dock_areas)
+
     def _make_docks(self):
+        """Build the IDE with native, movable, floatable and closable panels."""
+        self.setDockNestingEnabled(True)
+        dock_options = (
+            QMainWindow.DockOption.AnimatedDocks
+            | QMainWindow.DockOption.AllowNestedDocks
+            | QMainWindow.DockOption.AllowTabbedDocks
+        )
+        self.setDockOptions(dock_options)
+
         self.tree = QTreeView()
+        self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.fs = ColorFileSystemModel()
         self.fs.setReadOnly(False)
         fs_filter = QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot
@@ -367,12 +814,16 @@ class MainWindow(QMainWindow):
         self.tree.customContextMenuRequested.connect(self.tree_context_menu)
         for column in (1, 2, 3):
             self.tree.hideColumn(column)
-        self.explorer = QDockWidget("EXPLORER", self)
+
+        self.explorer = WorkspacePanel("EXPLORER", self)
+        self.explorer.setObjectName("panel.explorer")
+        self.explorer.setHeaderVisible(False)
         self.explorer.setWidget(self.tree)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer)
 
         self.output = QTextEdit()
         self.output.setReadOnly(True)
+        self.output.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.output.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.output.document().setMaximumBlockCount(int(self.settings.value("max_log_records", 12000)))
         self.log_filter = QComboBox()
         self.log_filter.addItem("All categories")
@@ -395,11 +846,12 @@ class MainWindow(QMainWindow):
         terminal = QWidget(); terminal_layout = QVBoxLayout(terminal)
         terminal_layout.setContentsMargins(4, 4, 4, 4)
         terminal_layout.addLayout(filter_row)
-        terminal_layout.addWidget(self.output); terminal_layout.addWidget(self.console_input)
-        self.output_dock = QDockWidget("DETAILED LOG / DEBUG CONSOLE", self)
-        self.output_dock.setWidget(terminal)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
-        self.output_dock.setMinimumHeight(170)
+        terminal_layout.addWidget(self.output, 1)
+        terminal_layout.addWidget(self.console_input)
+        self.output_panel = WorkspacePanel("DETAILED LOG / DEBUG CONSOLE", self)
+        self.output_panel.setObjectName("panel.output")
+        self.output_panel.setHeaderVisible(False)
+        self.output_panel.setWidget(terminal)
 
         self.inspector = QListWidget()
         self.outline = QListWidget()
@@ -412,7 +864,6 @@ class MainWindow(QMainWindow):
         self.call_stack_view.itemDoubleClicked.connect(self.go_to_stack_item)
         self.variables_view = QListWidget()
         self.variables_view.itemDoubleClicked.connect(self.expand_variable_item)
-
         self.watch_view = QListWidget()
         self.watch_view.itemDoubleClicked.connect(self.evaluate_selected_watch)
         watch_widget = QWidget(); watch_layout = QVBoxLayout(watch_widget)
@@ -434,9 +885,172 @@ class MainWindow(QMainWindow):
         self.right_tabs.addTab(self.outline, "Outline")
         self.right_tabs.addTab(self.problems, "Problems")
         self.right_tabs.addTab(self.debug_tabs, "Debug")
-        self.inspector_dock = QDockWidget("CODE INSIGHT", self)
-        self.inspector_dock.setWidget(self.right_tabs)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.inspector_dock)
+        self.inspector_panel = WorkspacePanel("CODE INSIGHT", self)
+        self.inspector_panel.setObjectName("panel.codeInsight")
+        self.inspector_panel.setHeaderVisible(False)
+        self.inspector_panel.setWidget(self.right_tabs)
+
+        self.ai_dock = AIAgentDock(
+            self.settings, self.project_root, self.current_editor, self,
+            backend_getter=self.ensure_backend, open_path=self.open_path,
+        )
+        self.ai_dock.setObjectName("panel.aiAssistant")
+        self.git_dock = GitDock(self.project_root, self.log, self)
+        self.git_dock.setObjectName("panel.sourceControl")
+
+        dock_features = (
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        all_areas = Qt.DockWidgetArea.AllDockWidgetAreas
+
+        def create_dock(title: str, object_name: str, widget: QWidget, minimum_width: int, minimum_height: int):
+            dock = QDockWidget(title, self)
+            dock.setObjectName(object_name)
+            dock.setFeatures(dock_features)
+            dock.setAllowedAreas(all_areas)
+            # Size constraints belong to panel contents; constraining the dock
+            # itself makes its minimum depend on docked/floating state and can
+            # suppress the main-window resize separators.
+            dock.setWidget(widget)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+            dock.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+            return dock
+
+        self.explorer_dock = create_dock("Explorer", "dock.explorer", self.explorer, 210, 120)
+        self.source_control_dock = create_dock("Source Control", "dock.sourceControl", self.git_dock, 220, 150)
+        self.code_insight_dock = create_dock("Code Insight", "dock.codeInsight", self.inspector_panel, 250, 130)
+        self.ai_dock_widget = create_dock("AI Assistant", "dock.aiAssistant", self.ai_dock, 280, 160)
+        self.output_dock = create_dock("Detailed Log / Debug Console", "dock.output", self.output_panel, 300, 120)
+
+        # The editor is the central widget. All surrounding tools are genuine
+        # QMainWindow docks: native title bars provide close/float controls,
+        # dragging outside the window creates independent windows, and
+        # dragging back onto a dock guide reattaches them.
+        self.setCentralWidget(self.tabs)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
+        self.splitDockWidget(self.explorer_dock, self.source_control_dock, Qt.Orientation.Vertical)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.code_insight_dock)
+        self.splitDockWidget(self.code_insight_dock, self.ai_dock_widget, Qt.Orientation.Vertical)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
+
+        self._all_tool_panels = (
+            self.explorer_dock, self.source_control_dock, self.code_insight_dock,
+            self.ai_dock_widget, self.output_dock,
+        )
+        self._dock_by_content = {
+            self.explorer: self.explorer_dock,
+            self.git_dock: self.source_control_dock,
+            self.inspector_panel: self.code_insight_dock,
+            self.right_tabs: self.code_insight_dock,
+            self.ai_dock: self.ai_dock_widget,
+            self.output_panel: self.output_dock,
+            self.output: self.output_dock,
+        }
+        self._dock_default_areas = {
+            self.explorer_dock: Qt.DockWidgetArea.LeftDockWidgetArea,
+            self.source_control_dock: Qt.DockWidgetArea.LeftDockWidgetArea,
+            self.code_insight_dock: Qt.DockWidgetArea.RightDockWidgetArea,
+            self.ai_dock_widget: Qt.DockWidgetArea.RightDockWidgetArea,
+            self.output_dock: Qt.DockWidgetArea.BottomDockWidgetArea,
+        }
+        self._dock_last_areas = dict(self._dock_default_areas)
+        for dock in self._all_tool_panels:
+            dock.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            dock.dockLocationChanged.connect(lambda area, target=dock: self._remember_dock_area(target, area))
+
+        self.git_status_delegate = GitStatusDelegate(self.tree, self.project_root, self.tree)
+        self.tree.setItemDelegateForColumn(0, self.git_status_delegate)
+        self.git_dock.statusChanged.connect(self.git_status_delegate.set_status)
+
+    def _remember_dock_area(self, dock, area):
+        if area != Qt.DockWidgetArea.NoDockWidgetArea:
+            self._dock_last_areas[dock] = area
+
+    def _sync_dock_areas(self):
+        for dock in self._all_tool_panels:
+            area = self.dockWidgetArea(dock)
+            if area != Qt.DockWidgetArea.NoDockWidgetArea:
+                self._dock_last_areas[dock] = area
+
+    def _apply_default_dock_sizes(self):
+        """Apply default dimensions while preserving independent dock movement."""
+        self.resizeDocks([self.explorer_dock], [310], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.code_insight_dock], [410], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.explorer_dock, self.source_control_dock], [420, 330], Qt.Orientation.Vertical)
+        self.resizeDocks([self.code_insight_dock, self.ai_dock_widget], [300, 450], Qt.Orientation.Vertical)
+        self.resizeDocks([self.output_dock], [205], Qt.Orientation.Vertical)
+
+    def _update_dock_move_actions(self, dock, floating: bool):
+        """Keep the explicit Float / Dock Back commands context-sensitive."""
+        float_action = getattr(self, "_float_panel_actions", {}).get(dock)
+        dock_back_action = getattr(self, "_dock_back_panel_actions", {}).get(dock)
+        if float_action is not None:
+            float_action.setEnabled(not floating)
+        if dock_back_action is not None:
+            dock_back_action.setEnabled(floating)
+
+    def set_dock_visible(self, panel_or_dock, visible: bool):
+        """Show, hide or restore a tool panel without destroying its contents."""
+        dock = self._dock_by_content.get(panel_or_dock, panel_or_dock)
+        if dock not in self._all_tool_panels:
+            raise ValueError("Unknown OpenGDS-IDE panel")
+        if visible:
+            dock.show()
+            dock.raise_()
+        else:
+            dock.hide()
+
+    def float_panel(self, dock):
+        """Detach a panel into its own top-level tool window."""
+        if dock not in self._all_tool_panels:
+            return
+        dock.show()
+        dock.setFloating(True)
+        dock.raise_()
+        dock.activateWindow()
+        self.statusBar().showMessage(f"{dock.windowTitle()} opened in a separate window", 3000)
+
+    def dock_panel(self, dock):
+        """Reattach a floating panel without overriding Qt's remembered dock slot."""
+        if dock not in self._all_tool_panels:
+            return
+        fallback_area = self._dock_last_areas.get(dock, self._dock_default_areas[dock])
+        if dock.isFloating():
+            # Qt remembers the dock area's split/tab position when a native
+            # dock is floated. Let it restore that exact position first.
+            dock.setFloating(False)
+            restored_area = self.dockWidgetArea(dock)
+            if restored_area == Qt.DockWidgetArea.NoDockWidgetArea:
+                self.addDockWidget(fallback_area, dock)
+                restored_area = fallback_area
+            self._dock_last_areas[dock] = restored_area
+        else:
+            self.addDockWidget(fallback_area, dock)
+        dock.show()
+        dock.raise_()
+        self.statusBar().showMessage(f"{dock.windowTitle()} docked back into OpenGDS-IDE", 3000)
+
+    def restore_default_dock_layout(self, show_message: bool = True):
+        """Restore the standard IDE arrangement and make every tool panel visible."""
+        for dock in self._all_tool_panels:
+            if dock.isFloating():
+                dock.setFloating(False)
+            self.removeDockWidget(dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
+        self.splitDockWidget(self.explorer_dock, self.source_control_dock, Qt.Orientation.Vertical)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.code_insight_dock)
+        self.splitDockWidget(self.code_insight_dock, self.ai_dock_widget, Qt.Orientation.Vertical)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
+        for dock in self._all_tool_panels:
+            dock.show()
+        self._dock_last_areas = dict(self._dock_default_areas)
+        QTimer.singleShot(0, self._apply_default_dock_sizes)
+        for action in getattr(self, "_dock_view_actions", {}).values():
+            action.setChecked(True)
+        if show_message:
+            self.statusBar().showMessage("Default panel layout restored", 4000)
 
     def act(self, name, slot, shortcut=None):
         action = QAction(name, self)
@@ -528,15 +1142,47 @@ class MainWindow(QMainWindow):
         language.addAction(self.act("Analyze Current File", self.refresh_language_tools, "Ctrl+Shift+M"))
 
         view = self.menuBar().addMenu("View")
-        for dock in (self.explorer, self.output_dock, self.inspector_dock):
-            view.addAction(dock.toggleViewAction())
+        panels_menu = view.addMenu("Panels")
+        float_menu = view.addMenu("Move Panel to Separate Window")
+        dock_back_menu = view.addMenu("Dock Panel Back")
+        self._dock_view_actions = {}
+        self._float_panel_actions = {}
+        self._dock_back_panel_actions = {}
+        for dock in self._all_tool_panels:
+            action = dock.toggleViewAction()
+            action.setText(dock.windowTitle())
+            panels_menu.addAction(action)
+            self._dock_view_actions[dock.objectName()] = action
+            action_title_changed = lambda title, target_action=action: target_action.setText(title)
+            dock.windowTitleChanged.connect(action_title_changed)
+            float_action = self.act(dock.windowTitle(), lambda target=dock: self.float_panel(target))
+            dock_back_action = self.act(dock.windowTitle(), lambda target=dock: self.dock_panel(target))
+            float_menu.addAction(float_action)
+            dock_back_menu.addAction(dock_back_action)
+            self._float_panel_actions[dock] = float_action
+            self._dock_back_panel_actions[dock] = dock_back_action
+            dock.topLevelChanged.connect(
+                lambda floating, target=dock: self._update_dock_move_actions(target, floating)
+            )
+            self._update_dock_move_actions(dock, dock.isFloating())
+        view.addAction(self.act("Restore Default Panel Layout", self.restore_default_dock_layout))
+        view.addSeparator()
         view.addAction(self.act("Toggle Dark / Light", self.toggle_theme))
+        view.addSeparator()
+        view.addAction(self.act("Command Palette…", self.show_command_palette, "Ctrl+Shift+P"))
+        view.addAction(self.act("Quick Open File…", self.show_quick_open, "Ctrl+P"))
+        view.addAction(self.act("Go to Line…", self.go_to_line_dialog, "Ctrl+G"))
+        view.addAction(self.act("Next Editor Tab", lambda: self.tabs.setCurrentIndex((self.tabs.currentIndex() + 1) % max(1, self.tabs.count())), "Ctrl+PageDown"))
+        view.addAction(self.act("Previous Editor Tab", lambda: self.tabs.setCurrentIndex((self.tabs.currentIndex() - 1) % max(1, self.tabs.count())), "Ctrl+PageUp"))
+        view.addSeparator()
+        view.addAction(self.act("Focus Source Control", lambda: self.set_dock_visible(self.source_control_dock, True), "Ctrl+Shift+G"))
+        view.addAction(self.act("Focus AI Assistant", lambda: self.set_dock_visible(self.ai_dock_widget, True), "Ctrl+Shift+A"))
 
         tools = self.menuBar().addMenu("Tools")
         tools.addAction(self.act("Settings…", self.open_settings, "Ctrl+,"))
         tools.addAction(self.act("Launch Godot Editor for Project…", self.launch_godot_editor))
         tools.addAction(self.act("Run Custom Godot CLI Arguments…", self.run_custom_godot_command))
-        tools.addAction(self.act("Update OpenGDS.py Core…", self.update_backend))
+        tools.addAction(self.act("Update OpenGDS Core…", self.update_backend))
         tools.addAction(self.act("Open Project Folder", self.open_root_folder))
         tools.addAction(self.act("Open Logs Folder…", self.open_logs_folder))
         tools.addAction(self.act("OpenGDS Core CLI Help…", self.show_core_help))
@@ -547,10 +1193,11 @@ class MainWindow(QMainWindow):
         developer_action.setEnabled(False)
         help_menu.addAction(developer_action)
         help_menu.addSeparator()
-        help_menu.addAction(self.act("About OpenGDS - IDE", self.about))
+        help_menu.addAction(self.act("About OpenGDS-IDE", self.about))
 
     def _make_toolbar(self):
         toolbar = QToolBar("Main")
+        toolbar.setObjectName("toolbar.main")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
         for text, slot in [
@@ -572,7 +1219,7 @@ class MainWindow(QMainWindow):
             "• Right-click the project tree to create, rename or delete files and folders.\n\n"
             "Godot Editor must have the same project open for LSP and DAP.\n"
             "Default ports: LSP 6005, DAP 6006, remote game debugger 6007.\n\n"
-            f"OpenGDS backend: {Path(__file__).with_name('OpenGDS.py')}"
+            f"OpenGDS backend: {'embedded in executable' if is_frozen_app() else default_backend_path()}"
         )
         self.tabs.addTab(welcome, "Welcome")
 
@@ -581,6 +1228,13 @@ class MainWindow(QMainWindow):
         QApplication.instance().setStyleSheet(DARK if theme == "dark" else LIGHT)
         for editor in self.editors.values():
             editor.set_theme(theme)
+        # Native QDockWidget title bars and dock guides are styled by the
+        # application stylesheet; no custom splitter handle repolishing needed.
+        QTimer.singleShot(0, self._refresh_dock_widgets)
+
+    def _refresh_dock_widgets(self):
+        for dock in getattr(self, "_all_tool_panels", ()):
+            dock.update()
 
     def toggle_theme(self):
         self.settings.setValue("theme", "light" if self.settings.value("theme", "dark") == "dark" else "dark")
@@ -594,20 +1248,50 @@ class MainWindow(QMainWindow):
         return Path(self.data["root"]).resolve() if self.data and self.data.get("root") else self.root
 
     def set_project(self, data):
-        if self.root and Path(data["root"]).resolve() != self.root:
+        new_root = Path(data["root"]).resolve()
+        if self.ai_dock.is_busy() and self.root and new_root != self.root:
+            QMessageBox.information(
+                self, APP_NAME,
+                "An AI request or approved action is still running in the current workspace. Wait for it to finish before switching projects."
+            )
+            return False
+        if self.root and new_root != self.root and self.ai_dock.engine:
+            pending = self.ai_dock.engine.pending_actions()
+            if pending:
+                answer = QMessageBox.warning(
+                    self, "Pending AI changes",
+                    f"The current workspace has {len(pending)} unreviewed AI proposal(s). Switching projects will discard these pending proposals from this session. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return False
+        if self.root and new_root != self.root:
             self.dap.disconnect_from_server()
             self.lsp.disconnect_from_server()
             self.lsp_diagnostics.clear()
             self.server_completions.clear()
         self.data = data
         self.root = Path(data["root"]).resolve()
+        self.ai_dock.set_workspace(self.root)
+        self.git_dock.set_workspace(self.root)
         self.fs.setRootPath(str(self.root))
         self.tree.setRootIndex(self.fs.index(str(self.root)))
-        self.explorer.setWindowTitle("EXPLORER — " + data.get("name", self.root.name))
-        backend_path = self.settings.value("backend_path", data.get("backend") or str(Path(__file__).with_name("OpenGDS.py")))
+        explorer_title = "Explorer — " + data.get("name", self.root.name)
+        self.explorer.setWindowTitle(explorer_title)
+        self.explorer_dock.setWindowTitle(explorer_title)
+        view_action = getattr(self, "_dock_view_actions", {}).get(self.explorer_dock.objectName())
+        if view_action is not None:
+            view_action.setText(explorer_title)
+        if self.settings.contains("backend_path"):
+            backend_path = self.settings.value("backend_path")
+        elif is_frozen_app():
+            backend_path = default_backend_path()
+        else:
+            backend_path = data.get("backend") or str(default_backend_path())
         self.backend = OpenGDSBackend(backend_path)
         self.backend.default_timeout = int(self.settings.value("backend_timeout", 300))
-        self.data["backend"] = str(self.backend.script)
+        self.data["backend"] = "" if self.backend.embedded else str(self.backend.script)
         if data.get("descriptor"):
             self.history.add(data["descriptor"])
         else:
@@ -616,7 +1300,7 @@ class MainWindow(QMainWindow):
         self.inspector.clear()
         self.inspector.addItems([
             f"Project: {data.get('name', self.root.name)}", f"Root: {self.root}",
-            f"Backend: {self.backend.script}",
+            f"Backend: {'embedded in executable' if self.backend.embedded else self.backend.script}",
             f"Godot: {data.get('godot_executable') or self.settings.value('godot_path', 'Not configured')}",
         ])
         self.workspace_completions = project_symbols(self.root)
@@ -671,10 +1355,10 @@ class MainWindow(QMainWindow):
                 rows.append(f"{module}: detection failed ({exc})")
         try:
             backend = self.ensure_backend()
-            result = subprocess.run([sys.executable, str(backend.script), "--version"],
+            result = subprocess.run(backend.command("--version"),
                 cwd=str(self.project_root() or backend.script.parent), stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
-            rows += [f"OpenGDS backend: {backend.script}", f"OpenGDS version: {result.stdout.strip() or 'unknown'} (exit {result.returncode})"]
+            rows += [f"OpenGDS backend: {'embedded in executable' if backend.embedded else backend.script}", f"OpenGDS version: {result.stdout.strip() or 'unknown'} (exit {result.returncode})"]
         except Exception as exc:
             rows.append(f"OpenGDS backend: ERROR — {exc}")
         godot = self.find_godot(prompt=False)
@@ -697,7 +1381,7 @@ class MainWindow(QMainWindow):
     def show_core_help(self):
         try:
             backend = self.ensure_backend()
-            result = subprocess.run([sys.executable, str(backend.script), "--help"], cwd=str(self.project_root() or backend.script.parent),
+            result = subprocess.run(backend.command("--help"), cwd=str(self.project_root() or backend.script.parent),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", timeout=15, check=False)
             self.show_report_tab("OpenGDS Core CLI Reference", result.stdout)
         except Exception as exc:
@@ -729,7 +1413,9 @@ class MainWindow(QMainWindow):
 
     def ensure_backend(self):
         if not self.backend:
-            configured = self.settings.value("backend_path", str(Path(__file__).with_name("OpenGDS.py")))
+            # A saved external backend is honored in both development and frozen
+            # builds; otherwise frozen builds use their embedded CLI dispatcher.
+            configured = self.settings.value("backend_path", str(default_backend_path()))
             self.backend = OpenGDSBackend(configured)
         self.backend.default_timeout = int(self.settings.value("backend_timeout", 300))
         return self.backend
@@ -874,6 +1560,71 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.error(exc)
 
+    def open_agent_proposal_preview(self, path, proposed_text: str):
+        """Open an AI-created file as a read-only editor preview without writing it."""
+        path = Path(path).expanduser().resolve()
+        root = self.project_root()
+        if root:
+            root = Path(root).resolve()
+            if root not in path.parents:
+                raise ValueError("AI preview path must stay inside the current workspace.")
+        if path.is_file():
+            self.open_path(path)
+            return self.editors.get(path)
+        existing = self.editors.get(path)
+        if existing is not None:
+            if getattr(existing, "_ai_proposal_placeholder", False):
+                existing.setReadOnly(False)
+                existing.setPlainText(str(proposed_text))
+                existing.document().setModified(False)
+                existing.setReadOnly(True)
+                existing.set_ai_diff_preview(str(proposed_text), path=path.as_posix(), base_text="")
+            self.tabs.setCurrentWidget(existing)
+            return existing
+
+        editor = CodeEditor(self.settings.value("theme", "dark"), int(self.settings.value("tab_width", 4)))
+        editor.setFont(QFont(self.settings.value("font", "Consolas"), int(self.settings.value("font_size", 11))))
+        editor.configure_features(
+            auto_pairs=self.settings.value("auto_pairs", "true") == "true",
+            auto_indent=self.settings.value("auto_indent", "true") == "true",
+            auto_completion=self.settings.value("auto_completion", "true") == "true",
+            line_numbers=self.settings.value("line_numbers", "true") == "true",
+            word_wrap=self.settings.value("word_wrap", "false") == "true",
+        )
+        editor.setPlainText(str(proposed_text))
+        editor.file_path = path
+        editor._ai_proposal_placeholder = True
+        editor.document().setModified(False)
+        editor.setReadOnly(True)
+        editor.set_ai_diff_preview(str(proposed_text), path=path.as_posix(), base_text="")
+        editor.textChanged.connect(lambda e=editor: self.editor_changed(e))
+        editor.breakpointsChanged.connect(lambda lines, e=editor: self.on_breakpoints_changed(e, lines))
+        editor.completionRequested.connect(lambda line, column, e=editor: self.request_completion(e, line, column))
+        self.editors[path] = editor
+        index = self.tabs.addTab(editor, f"{path.name}  · AI preview")
+        self.tabs.setTabToolTip(index, f"{path}\nNew file proposal — read-only until approved")
+        self.tabs.setCurrentIndex(index)
+        self.statusBar().showMessage(f"AI preview only — not saved: {path}")
+        return editor
+
+    def close_agent_proposal_previews(self, relative_paths):
+        """Close read-only placeholder tabs when their new-file proposals are declined."""
+        root = self.project_root()
+        if not root:
+            return
+        root = Path(root).resolve()
+        for relative in dict.fromkeys(str(value) for value in relative_paths if value):
+            try:
+                path = (root / relative).resolve()
+                editor = self.editors.get(path)
+                if editor is None or not getattr(editor, "_ai_proposal_placeholder", False) or path.exists():
+                    continue
+                index = self.tabs.indexOf(editor)
+                if index >= 0:
+                    self.close_tab(index)
+            except (OSError, ValueError):
+                continue
+
     def open_file(self):
         start = str(self.project_root() or Path.home())
         path = QFileDialog.getOpenFileName(
@@ -942,12 +1693,59 @@ class MainWindow(QMainWindow):
             elif suffix in {".zip", ".apk"} or looks_like_pck_or_executable(selected):
                 special_actions[menu.addAction("Inspect Archive / PCK")] = "archive_info"
                 special_actions[menu.addAction("Extract Archive…")] = "archive_extract"
+        git_context_actions = {}
+        workspace = self.project_root()
+        if workspace and selected.exists():
+            try:
+                selected_relative = selected.resolve().relative_to(Path(workspace).resolve()).as_posix()
+                matches = self.git_dock._get_service().status()
+                if selected.is_dir():
+                    prefix = "" if selected_relative == "." else selected_relative.rstrip("/") + "/"
+                    scoped = [change for change in matches if not prefix or change.path.startswith(prefix)]
+                else:
+                    scoped = [change for change in matches if change.path == selected_relative]
+                if scoped:
+                    source_menu = menu.addMenu("Source Control")
+                    stageable = [change.path for change in scoped if change.unstaged]
+                    staged_paths = [change.path for change in scoped if change.staged]
+                    if stageable:
+                        git_context_actions[source_menu.addAction("Stage changes")] = ("stage", stageable)
+                    if staged_paths:
+                        git_context_actions[source_menu.addAction("Unstage changes")] = ("unstage", staged_paths)
+                    if len(scoped) == 1:
+                        git_context_actions[source_menu.addAction("Open diff")] = ("diff", [scoped[0].path])
+                        git_context_actions[source_menu.addAction("Discard changes…")] = ("discard", [scoped[0].path])
+                    else:
+                        diff_menu = source_menu.addMenu(f"Open diff ({len(scoped)} files)")
+                        for change in scoped:
+                            action = diff_menu.addAction(change.path)
+                            git_context_actions[action] = ("diff", [change.path])
+                        git_context_actions[source_menu.addAction(f"Discard {len(scoped)} changes…")] = ("discard", [c.path for c in scoped])
+            except Exception:
+                # Source Control is optional; file operations remain available
+                # when Git is not installed or the selected folder is outside the workspace.
+                pass
         rename_action = menu.addAction("Rename…") if index.isValid() else None
         delete_action = menu.addAction("Delete…") if index.isValid() else None
         menu.addSeparator()
         copy_action = menu.addAction("Copy Path")
         reveal_action = menu.addAction("Reveal in File Manager")
         chosen = menu.exec(self.tree.viewport().mapToGlobal(point))
+        if chosen in git_context_actions:
+            operation, paths = git_context_actions[chosen]
+            try:
+                if operation == "stage":
+                    self.git_dock.stage_paths(paths)
+                elif operation == "unstage":
+                    self.git_dock.unstage_paths(paths)
+                elif operation == "diff":
+                    if len(paths) == 1:
+                        self.git_dock.diff_path(paths[0])
+                elif operation == "discard":
+                    self.git_dock.discard_paths(paths)
+            except Exception as exc:
+                self.error(exc)
+            return
         if chosen == new_file_action:
             name, ok = QInputDialog.getText(self, "New File", "File name:")
             if ok and name:
@@ -1048,18 +1846,84 @@ class MainWindow(QMainWindow):
     def editor_changed(self, editor):
         self.mark_tab(editor)
         self.analysis_timer.start()
+        if (hasattr(self, "ai_dock") and editor is self.current_editor()
+                and getattr(editor, "ai_diff_path", "")):
+            self.ai_dock.refresh_inline_decorations()
 
     def mark_tab(self, editor):
         index = self.tabs.indexOf(editor)
         if index >= 0:
-            title = editor.file_path.name + (" •" if editor.document().isModified() else "")
+            file_path = getattr(editor, "file_path", None)
+            base_title = Path(file_path).name if file_path else "Untitled"
+            if getattr(editor, "_ai_proposal_placeholder", False):
+                suffix = "  · AI preview"
+            elif getattr(editor, "_ai_proposal_pending", False):
+                suffix = "  · AI change"
+            else:
+                suffix = ""
+            title = base_title + suffix + (" •" if editor.document().isModified() else "")
             self.tabs.setTabText(index, title)
+            tooltip = str(file_path) if file_path else "Untitled buffer"
+            if getattr(editor, "_ai_proposal_pending", False):
+                tooltip += "\nAI proposal pending · review in AI Assistant → Changes"
+            self.tabs.setTabToolTip(index, tooltip)
+
+    def reload_agent_files(self, relative_paths):
+        """Synchronize open editor buffers after approved AI/OpenGDS file writes."""
+        root = self.project_root()
+        if not root:
+            return
+        refreshed = []
+        for relative in dict.fromkeys(str(value) for value in relative_paths if value):
+            try:
+                path = (Path(root) / relative).resolve()
+                if Path(root).resolve() not in path.parents and path != Path(root).resolve():
+                    continue
+                editor = self.editors.get(path)
+                if editor is None and path.is_file() and path.suffix.lower() == ".gd":
+                    self.open_path(path)
+                    editor = self.editors.get(path)
+                if editor is None or not path.is_file():
+                    continue
+                if editor.document().isModified():
+                    self.log(f"Skipped refreshing modified editor buffer after AI approval: {path}", category="AI", level=logging.WARNING)
+                    continue
+                was_placeholder = bool(getattr(editor, "_ai_proposal_placeholder", False))
+                content = path.read_text(encoding="utf-8-sig")
+                if was_placeholder:
+                    editor.setReadOnly(False)
+                    editor._ai_proposal_placeholder = False
+                editor.setPlainText(content)
+                editor.document().setModified(False)
+                editor.clear_ai_diff()
+                self.mark_tab(editor)
+                index = self.tabs.indexOf(editor)
+                if index >= 0:
+                    self.tabs.setTabToolTip(index, str(path))
+                if path.suffix.lower() == ".gd":
+                    if was_placeholder:
+                        self.lsp.open_document(path, content)
+                    else:
+                        self.lsp.change_document(path, content)
+                    self.lsp.save_document(path, content)
+                    editor._last_lsp_text = content
+                refreshed.append(path)
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.log(f"Could not refresh editor after approved AI change {relative}: {exc}", category="AI", level=logging.WARNING)
+        if refreshed:
+            self.analysis_timer.start()
+            self.log(f"Refreshed {len(refreshed)} open editor buffer(s) after approved changes", category="AI")
+        self.git_dock.refresh()
+        self.ai_dock.refresh_inline_decorations()
 
     def save_file(self):
         editor = self.current_editor()
         if not editor:
             return
         path = getattr(editor, "file_path", None)
+        if getattr(editor, "_ai_proposal_placeholder", False):
+            QMessageBox.information(self, "AI proposal preview", "This new file is a read-only AI proposal. Review and approve it from AI Assistant → Changes before saving it to the workspace.")
+            return
         if not path:
             selected = QFileDialog.getSaveFileName(self, "Save file", str(self.project_root() or Path.home()), "GDScript (*.gd)")[0]
             if not selected:
@@ -1074,6 +1938,8 @@ class MainWindow(QMainWindow):
                 self.lsp.save_document(path, editor.toPlainText())
             self.statusBar().showMessage(f"Saved {path}")
             self.log(f"Saved file: {path}", category="FILE")
+            if self.project_root() and path.resolve().is_relative_to(self.project_root()):
+                self.git_dock.refresh()
         except Exception as exc:
             self.error(exc)
 
@@ -1081,13 +1947,16 @@ class MainWindow(QMainWindow):
         if self.settings.value("autosave", "true") != "true":
             return
         for editor in list(self.editors.values()):
-            if editor.document().isModified() and getattr(editor, "file_path", None):
+            if (not getattr(editor, "_ai_proposal_placeholder", False)
+                    and editor.document().isModified() and getattr(editor, "file_path", None)):
                 try:
                     editor.file_path.write_text(editor.toPlainText(), encoding="utf-8")
                     editor.document().setModified(False)
                     self.mark_tab(editor)
                     if editor.file_path.suffix.lower() == ".gd":
                         self.lsp.save_document(editor.file_path, editor.toPlainText())
+                    if self.project_root() and editor.file_path.resolve().is_relative_to(self.project_root()):
+                        self.git_dock.refresh()
                 except Exception as exc:
                     log_event("PYTHON", logging.ERROR, f"Autosave failed for {editor.file_path}: {exc}",
                               exc_info=(type(exc), exc, exc.__traceback__))
@@ -1109,10 +1978,16 @@ class MainWindow(QMainWindow):
             if answer == QMessageBox.StandardButton.Yes:
                 self.tabs.setCurrentIndex(index)
                 self.save_file()
+                # Save dialogs can be cancelled, validation can fail, and a
+                # read-only/permission error may leave the document modified.
+                # Never close the tab while unsaved text remains.
+                if widget.document().isModified():
+                    return
         if isinstance(widget, CodeEditor):
             path = getattr(widget, "file_path", None)
             if path:
-                self.lsp.close_document(path)
+                if not getattr(widget, "_ai_proposal_placeholder", False):
+                    self.lsp.close_document(path)
                 self.editors.pop(path, None)
         self.tabs.removeTab(index)
         widget.deleteLater()
@@ -1123,6 +1998,169 @@ class MainWindow(QMainWindow):
         if editor:
             self.statusBar().showMessage(f"{editor.file_path}  |  Ln {editor.textCursor().blockNumber() + 1}, Col {editor.textCursor().positionInBlock() + 1}")
             self.analysis_timer.start()
+        if hasattr(self, "ai_dock"):
+            self.ai_dock.refresh_inline_decorations()
+
+    def _tab_context_menu(self, point):
+        bar = self.tabs.tabBar()
+        index = bar.tabAt(point)
+        if index < 0:
+            return
+        widget = self.tabs.widget(index)
+        path = getattr(widget, "file_path", None)
+        menu = QMenu(self)
+        menu.addAction("Close", lambda: self.close_tab(index))
+        menu.addAction("Close Others", lambda: self._close_other_tabs(index))
+        menu.addAction("Close Tabs to the Right", lambda: self._close_tabs_to_right(index))
+        menu.addSeparator()
+        copy_path = menu.addAction("Copy Path")
+        reveal = menu.addAction("Reveal in File Explorer")
+        copy_path.setEnabled(bool(path))
+        reveal.setEnabled(bool(path))
+        chosen = menu.exec(bar.mapToGlobal(point))
+        if chosen == copy_path and path:
+            QApplication.clipboard().setText(str(path))
+        elif chosen == reveal and path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve().parent)))
+
+    def _close_other_tabs(self, keep_index):
+        for index in range(self.tabs.count() - 1, -1, -1):
+            if index != keep_index:
+                self.close_tab(index)
+            if index < keep_index:
+                keep_index -= 1
+
+    def _close_tabs_to_right(self, index):
+        for current in range(self.tabs.count() - 1, index, -1):
+            self.close_tab(current)
+
+    def show_command_palette(self):
+        """Search and run any enabled action exposed by the application menus."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Command Palette")
+        dialog.setObjectName("commandPalette")
+        dialog.resize(720, 480)
+        layout = QVBoxLayout(dialog)
+        query = QLineEdit()
+        query.setPlaceholderText("Type a command…")
+        query.setClearButtonEnabled(True)
+        results = QListWidget()
+        layout.addWidget(query)
+        layout.addWidget(results, 1)
+        actions = []
+
+        def collect(menu):
+            for action in menu.actions():
+                if action.menu():
+                    collect(action.menu())
+                elif action.isEnabled() and action.text().strip():
+                    text = action.text().replace("&", "").strip()
+                    if text and text not in {"Command Palette…"}:
+                        actions.append((text, action.shortcut().toString(), action))
+        for menu_action in self.menuBar().actions():
+            if menu_action.menu():
+                collect(menu_action.menu())
+
+        def populate(text=""):
+            needle = text.strip().casefold()
+            results.clear()
+            ranked = []
+            for label, shortcut, action in actions:
+                haystack = label.casefold()
+                if needle and needle not in haystack:
+                    words = needle.split()
+                    if not all(word in haystack for word in words):
+                        continue
+                score = 0 if haystack.startswith(needle) else 1
+                ranked.append((score, label.casefold(), label, shortcut, action))
+            for _score, _sort, label, shortcut, action in sorted(ranked)[:120]:
+                suffix = f"    {shortcut}" if shortcut else ""
+                item = QListWidgetItem(label + suffix)
+                item.setData(Qt.ItemDataRole.UserRole, action)
+                results.addItem(item)
+            if results.count():
+                results.setCurrentRow(0)
+        def run_selected():
+            item = results.currentItem()
+            if item:
+                action = item.data(Qt.ItemDataRole.UserRole)
+                dialog.accept()
+                if action and action.isEnabled():
+                    action.trigger()
+        query.textChanged.connect(populate)
+        results.itemActivated.connect(lambda _item: run_selected())
+        query.returnPressed.connect(run_selected)
+        query.installEventFilter(self)
+        populate()
+        query.setFocus()
+        dialog.exec()
+
+    def show_quick_open(self):
+        root = self.project_root()
+        if not root or not Path(root).is_dir():
+            self.open_file()
+            return
+        excluded = {".git", ".godot", ".venv", "venv", "__pycache__", "build", "dist", "node_modules", ".opengds"}
+        paths = []
+        for current, dirs, files in os.walk(root):
+            dirs[:] = [name for name in dirs if name not in excluded]
+            for name in files:
+                path = Path(current) / name
+                if path.is_file():
+                    paths.append(path)
+                    if len(paths) >= 2500:
+                        break
+            if len(paths) >= 2500:
+                break
+        paths.sort(key=lambda path: path.relative_to(root).as_posix().casefold())
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Quick Open")
+        dialog.resize(760, 520)
+        layout = QVBoxLayout(dialog)
+        query = QLineEdit()
+        query.setPlaceholderText("Search files by name or path…")
+        query.setClearButtonEnabled(True)
+        results = QListWidget()
+        layout.addWidget(query)
+        layout.addWidget(results, 1)
+        def populate(text=""):
+            needle = text.strip().casefold()
+            results.clear()
+            matches = []
+            for path in paths:
+                relative = path.relative_to(root).as_posix()
+                if needle and needle not in relative.casefold():
+                    continue
+                matches.append((relative, path))
+                if len(matches) >= 250:
+                    break
+            for relative, path in matches:
+                item = QListWidgetItem(relative)
+                item.setData(Qt.ItemDataRole.UserRole, str(path))
+                results.addItem(item)
+            if results.count():
+                results.setCurrentRow(0)
+        def open_selected():
+            item = results.currentItem()
+            if item:
+                path = Path(item.data(Qt.ItemDataRole.UserRole))
+                dialog.accept()
+                self.open_path(path)
+        query.textChanged.connect(populate)
+        query.returnPressed.connect(open_selected)
+        results.itemActivated.connect(lambda _item: open_selected())
+        populate()
+        query.setFocus()
+        dialog.exec()
+
+    def go_to_line_dialog(self):
+        editor = self.current_editor()
+        if not editor:
+            return
+        line, ok = QInputDialog.getInt(self, "Go to Line", "Line number:", editor.textCursor().blockNumber() + 1,
+                                       1, max(1, editor.blockCount()))
+        if ok:
+            self.go_to_line(editor, line)
 
     def find_in_editor(self):
         editor = self.current_editor()
@@ -1481,7 +2519,7 @@ class MainWindow(QMainWindow):
         host = self.settings.value("dap_host", "127.0.0.1")
         port = int(self.settings.value("dap_port", 6006))
         remote_port = int(self.settings.value("godot_remote_port", 6007))
-        self.output_dock.show()
+        self.set_dock_visible(self.output_dock, True)
         self.right_tabs.setCurrentWidget(self.debug_tabs)
         self.log("Starting native Godot DAP session. Godot Editor must be open with this project and Debug Adapter enabled.", category="DAP")
         self.dap.connect_to_server(host, port, root, breakpoints, scene=cfg.get("scene", ""), remote_port=remote_port)
@@ -1571,7 +2609,7 @@ class MainWindow(QMainWindow):
             if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
                 raise RuntimeError("An OpenGDS runtime-debug process is already active; stop it first")
             self.log("Starting OpenGDS core runtime debugger (--godot).\n" + subprocess.list2cmdline(args), category="GODOT_DEBUG")
-            self.output_dock.show()
+            self.set_dock_visible(self.output_dock, True)
             core_log_path = log_directory() / "core.log"
             core_log_offset = core_log_path.stat().st_size if core_log_path.exists() else 0
             self.process = QProcess(self)
@@ -1612,7 +2650,7 @@ class MainWindow(QMainWindow):
                 elif any(token in upper for token in ("SCRIPT ERROR", "PARSE ERROR", "PARSER ERROR", "SCRIPT FAILED", ".GD:", "GDSCRIPT ERROR", "GDSCRIPT WARNING", "INVALID CALL", "INVALID GET INDEX", "UNUSED VARIABLE", "UNUSED PARAMETER")):
                     resolved_category = "GDSCRIPT"
             log_event(resolved_category, level, line, exc_info=exc_info)
-        self.output_dock.show()
+        self.set_dock_visible(self.output_dock, True)
 
     def render_log_record(self, record):
         category = getattr(record, "category", "SYSTEM")
@@ -1720,9 +2758,31 @@ class MainWindow(QMainWindow):
             "validate_with_godot": bool(cfg.get("validate_with_godot", True)),
         }
 
+    def _preferred_backend_file(self, suffixes):
+        """Resolve a selected file-tree item or active editor before opening a picker."""
+        wanted = {str(suffix).lower() for suffix in suffixes}
+        try:
+            selected_rows = self.tree.selectionModel().selectedRows(0) if self.tree.selectionModel() else []
+            indexes = selected_rows or ([self.tree.currentIndex()] if self.tree.currentIndex().isValid() else [])
+            for index in indexes:
+                candidate = Path(self.fs.filePath(index)).resolve()
+                if candidate.is_file() and candidate.suffix.lower() in wanted:
+                    return candidate
+        except (OSError, RuntimeError, ValueError):
+            pass
+        editor = self.current_editor()
+        editor_path = getattr(editor, "file_path", None) if editor else None
+        if editor_path:
+            candidate = Path(editor_path).resolve()
+            if candidate.is_file() and candidate.suffix.lower() in wanted:
+                return candidate
+        return None
+
     def compile_single_source(self, source=None):
         try:
-            source = Path(source).resolve() if source else self.choose_backend_file((".gd",), "Compile GDScript source")
+            source = Path(source).resolve() if source else self._preferred_backend_file((".gd",))
+            if source is None:
+                source = self.choose_backend_file((".gd",), "Compile GDScript source")
             if not source:
                 return
             if source.suffix.lower() != ".gd":
@@ -1731,6 +2791,9 @@ class MainWindow(QMainWindow):
             if editor and editor.document().isModified():
                 self.tabs.setCurrentWidget(editor)
                 self.save_file()
+                if editor.document().isModified():
+                    self.statusBar().showMessage("Compile cancelled: save the active source file first.")
+                    return
             output = source.with_suffix(".gdc")
             cfg = self._compile_config()
             overwrite = cfg["overwrite"]
@@ -1753,7 +2816,9 @@ class MainWindow(QMainWindow):
 
     def decompile_single_binary(self, binary=None):
         try:
-            binary = Path(binary).resolve() if binary else self.choose_backend_file((".gdc",), "Decompile GDSC binary")
+            binary = Path(binary).resolve() if binary else self._preferred_backend_file((".gdc",))
+            if binary is None:
+                binary = self.choose_backend_file((".gdc",), "Decompile GDSC binary")
             if not binary:
                 return
             if binary.suffix.lower() != ".gdc":
@@ -2252,9 +3317,15 @@ class MainWindow(QMainWindow):
             if self.data:
                 if self.data.get("descriptor"):
                     save_project(self.data)
-                self.backend = OpenGDSBackend(self.settings.value("backend_path", self.data.get("backend") or str(Path(__file__).with_name("OpenGDS.py"))))
+                if self.settings.contains("backend_path"):
+                    backend_path = self.settings.value("backend_path")
+                elif is_frozen_app():
+                    backend_path = default_backend_path()
+                else:
+                    backend_path = self.data.get("backend") or str(default_backend_path())
+                self.backend = OpenGDSBackend(backend_path)
                 self.backend.default_timeout = int(self.settings.value("backend_timeout", 300))
-                self.data["backend"] = str(self.backend.script)
+                self.data["backend"] = "" if self.backend.embedded else str(self.backend.script)
             self.apply_theme()
             self.autosave_timer.setInterval(int(self.settings.value("autosave_interval", 30)) * 1000)
             fs_filter = QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot
@@ -2275,15 +3346,74 @@ class MainWindow(QMainWindow):
             self.log("Settings saved. Reconnect to Godot LSP/DAP to apply changed ports.", category="GUI")
 
     def update_backend(self):
-        source = QFileDialog.getOpenFileName(self, "Select updated OpenGDS.py", str(Path.home()), "Python files (*.py)")[0]
-        if not source:
+        """Select either an updated Python core or a standalone CLI executable.
+
+        A standalone opengds-cli.exe is preferred on systems where Python is
+        not installed. The IDE itself and the CLI build remain independent.
+        """
+        selected = QFileDialog.getOpenFileName(
+            self, "Select OpenGDS core update", str(Path.home()),
+            "OpenGDS core files (OpenGDS.py opengds-cli.exe *.py *.exe);;Python core (*.py);;Standalone CLI executable (*.exe)",
+        )[0]
+        if not selected:
             return
+        source = Path(selected).expanduser().resolve()
         try:
-            target = Path(self.settings.value("backend_path", str(Path(__file__).with_name("OpenGDS.py"))))
-            backup = OpenGDSBackend(target).install_update(source)
-            self.backend = OpenGDSBackend(target)
-            self.settings.setValue("backend_path", str(target))
-            self.log(f"Backend updated. Backup: {backup}")
+            if source.suffix.lower() == ".exe":
+                if not source.is_file():
+                    raise FileNotFoundError(source)
+                # Configure the selected standalone CLI directly. It needs no
+                # Python interpreter and works in frozen/portable deployments.
+                candidate = OpenGDSBackend(source)
+                candidate.run("--help", timeout=20)
+                self.settings.setValue("backend_path", str(source))
+                self.backend = candidate
+                if self.data is not None:
+                    self.data["backend"] = str(source)
+                    if self.data.get("descriptor"):
+                        save_project(self.data)
+                self.log(f"Standalone OpenGDS CLI selected: {source}", category="CORE")
+                QMessageBox.information(
+                    self, APP_NAME,
+                    "Standalone OpenGDS CLI configured successfully. Future compile/decompile operations will use this executable directly; Python is not required.",
+                )
+                return
+
+            if source.suffix.lower() != ".py" or source.name.lower() != "opengds.py":
+                answer = QMessageBox.question(
+                    self, "Use selected Python core?",
+                    "The selected file is not named OpenGDS.py. Configure it as the Python core anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+
+            if is_frozen_app():
+                from backend import find_python_command
+                interpreter = find_python_command()
+                if not interpreter:
+                    raise BackendError(
+                        "This is a compiled IDE and no external Python interpreter was found. "
+                        "Select opengds-cli.exe instead; it runs without Python installed."
+                    )
+                self.settings.setValue("backend_path", str(source))
+                self.backend = OpenGDSBackend(source)
+                self.log(f"External Python OpenGDS core selected using {interpreter[0]}", category="CORE")
+            else:
+                target = Path(self.settings.value("backend_path", str(default_backend_path()))).expanduser().resolve()
+                if target.suffix.lower() != ".py":
+                    target = default_backend_path()
+                if source != target:
+                    backup = OpenGDSBackend(target).install_update(source)
+                    self.log(f"OpenGDS Python core updated. Backup: {backup}", category="CORE")
+                self.settings.setValue("backend_path", str(target))
+                self.backend = OpenGDSBackend(target)
+            if self.data is not None:
+                self.data["backend"] = str(self.backend.script)
+                if self.data.get("descriptor"):
+                    save_project(self.data)
+            QMessageBox.information(self, APP_NAME, "OpenGDS Python core configured successfully.")
         except Exception as exc:
             self.error(exc)
 
@@ -2304,7 +3434,7 @@ class MainWindow(QMainWindow):
                 if descriptor.exists():
                     self.set_project(load_project(descriptor))
                 else:
-                    self.set_project({"name": candidate.name, "root": str(candidate.resolve()), "descriptor": "", "backend": str(Path(__file__).with_name("OpenGDS.py")), "compile": {}, "debug": {}, "editor": {}})
+                    self.set_project({"name": candidate.name, "root": str(candidate.resolve()), "descriptor": "", "backend": str(default_backend_path()), "compile": {}, "debug": {}, "editor": {}})
             else:
                 self.set_project(load_project(candidate))
         except Exception as exc:
@@ -2356,6 +3486,15 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, APP_NAME, str(error))
 
     def closeEvent(self, event):
+        # Never destroy a QThread while urllib is blocked in an AI provider call.
+        # The request is bounded by the configured provider timeout; keep the
+        # window alive so the user can see the result and close safely afterward.
+        if self.ai_dock.is_busy():
+            QMessageBox.information(
+                self, APP_NAME, "An AI request is still running. Wait for it to finish, then close OpenGDS-IDE."
+            )
+            event.ignore()
+            return
         for index in range(self.tabs.count()):
             widget = self.tabs.widget(index)
             if isinstance(widget, CodeEditor) and widget.document().isModified():
@@ -2365,27 +3504,92 @@ class MainWindow(QMainWindow):
                     event.ignore(); return
                 if answer == QMessageBox.StandardButton.Yes:
                     self.save_file()
+                    if widget.document().isModified():
+                        event.ignore()
+                        return
         self.settings.setValue("geometry", self.saveGeometry())
+        # QMainWindow state includes dock positions, tabification, visibility,
+        # floating status and floating-window geometry for every named dock.
+        self.settings.setValue("dock_layout_version", 2)
+        self.settings.setValue("dock_state", self.saveState(5))
         self.log("Application closing", category="GUI")
         self.lsp.disconnect_from_server()
         self.dap.disconnect_from_server()
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
             self.process.terminate()
         qInstallMessageHandler(None)
+        self.app_logger.removeHandler(self.qt_log_handler)
+        self.qt_log_handler.close()
+        close_logging()
         event.accept()
 
 
-def main():
-    app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setOrganizationName("OpenGDS")
-    icon_file = Path(__file__).with_name("assets") / "opengds-ide.ico"
-    if icon_file.is_file():
-        app.setWindowIcon(QIcon(str(icon_file)))
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+def _report_startup_failure(error: BaseException) -> Path | None:
+    """Persist and display startup failures instead of silently swallowing them."""
+    details = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    message = (
+        f"{APP_NAME} could not start.\n\n"
+        f"{type(error).__name__}: {error}\n\n"
+        "The full traceback is saved to startup-crash.log.\n"
+        "Please include that file when reporting this problem."
+    )
+    log_file = None
+    try:
+        configured = os.environ.get("OPENGDS_LOG_DIR", "").strip()
+        log_dir = Path(configured).expanduser() if configured else Path.home() / ".opengds-ide" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "startup-crash.log"
+        with log_file.open("a", encoding="utf-8") as stream:
+            from datetime import datetime
+            stream.write(f"\n\n===== {datetime.now().astimezone().isoformat()} =====\n")
+            stream.write(f"Python: {sys.version}\nExecutable: {sys.executable}\n")
+            stream.write(f"Working directory: {Path.cwd()}\n")
+            stream.write(details)
+    except Exception:
+        log_file = None
+
+    # A console traceback is useful with `python main.py`; on pythonw / frozen
+    # launches stderr may not exist, so the persistent file and dialog are the
+    # primary diagnostics there.
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(message + "\n\n" + details + "\n")
+            sys.stderr.flush()
+    except Exception:
+        pass
+
+    try:
+        application = QApplication.instance()
+        if application is not None:
+            dialog_message = message
+            if log_file:
+                dialog_message += f"\n\nLog file:\n{log_file}"
+            QMessageBox.critical(None, f"{APP_NAME} — Startup failed", dialog_message)
+    except Exception:
+        pass
+    return log_file
+
+
+def main() -> int:
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName(APP_NAME)
+        app.setOrganizationName("OpenGDS")
+        icon_file = Path(__file__).with_name("assets") / "opengds-ide.ico"
+        if icon_file.is_file():
+            app.setWindowIcon(QIcon(str(icon_file)))
+        # Keep the window in this stack frame for the lifetime of the Qt event loop.
+        window = MainWindow()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        return int(app.exec())
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:
+        _report_startup_failure(exc)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

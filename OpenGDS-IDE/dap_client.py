@@ -91,7 +91,7 @@ class GodotDebugClient(QObject):
 
     def _on_connected(self):
         self._send_request("initialize", {
-            "clientID": "opengds-ide", "clientName": "OpenGDS - IDE",
+            "clientID": "opengds-ide", "clientName": "OpenGDS-IDE",
             "adapterID": "godot", "locale": "en", "linesStartAt1": True,
             "columnsStartAt1": True, "pathFormat": "path",
             "supportsVariableType": True, "supportsVariablePaging": True,
@@ -240,7 +240,7 @@ class GodotDebugClient(QObject):
         self.seq += 1
         self._send({"seq": seq, "type": "response", "request_seq": message.get("seq"),
                     "success": False, "command": message.get("command", ""),
-                    "message": "OpenGDS - IDE does not implement this reverse request."})
+                    "message": "OpenGDS-IDE does not implement this reverse request."})
 
     def _on_disconnected(self):
         self.statusChanged.emit("Godot debugger disconnected")

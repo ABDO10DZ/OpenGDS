@@ -22,7 +22,7 @@ class Diagnostic:
     line: int
     column: int
     message: str
-    source: str = "OpenGDS - IDE"
+    source: str = "OpenGDS-IDE"
 
 _SYMBOL_PATTERNS = [
     ("class", re.compile(r"^\s*class_name\s+([A-Za-z_]\w*)")),

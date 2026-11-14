@@ -1,7 +1,5 @@
 """Qt TCP client for Godot's built-in GDScript Language Server (LSP)."""
 from __future__ import annotations
-
-from app_info import VERSION
 import os
 from pathlib import Path
 from PySide6.QtCore import QObject, Signal, QUrl
@@ -52,7 +50,7 @@ class GodotLanguageClient(QObject):
     def _on_connected(self):
         params = {
             "processId": os.getpid(),
-            "clientInfo": {"name": "OpenGDS - IDE", "version": VERSION},
+            "clientInfo": {"name": "OpenGDS-IDE", "version": "1.0.3"},
             "rootUri": self.root_uri,
             "capabilities": {
                 "textDocument": {

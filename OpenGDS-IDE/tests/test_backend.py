@@ -1,21 +1,89 @@
-import tempfile, unittest, os
+import tempfile, unittest, os, threading, sys, subprocess
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from backend import OpenGDSBackend
+from backend import OpenGDSBackend, BackendError
 
 class BackendTests(unittest.TestCase):
+
+    def test_standalone_cli_executable_is_invoked_without_python(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "opengds-cli.exe"
+            cli.write_text("#!/usr/bin/env python3\nimport sys\nprint('standalone:' + ' '.join(sys.argv[1:]))\n", encoding="utf-8")
+            cli.chmod(0o755)
+            backend = OpenGDSBackend(cli)
+            self.assertFalse(backend.embedded)
+            self.assertTrue(backend.standalone_executable)
+            self.assertTrue(os.path.samefile(backend.command("info", "sample.gdc")[0], cli))
+            # A text file named .exe is not a runnable Windows PE executable.
+            # Verify the backend dispatches directly to the selected executable
+            # without invoking Python; mock process creation instead of trying to
+            # execute an invalid fixture (which raises WinError 216 on Windows).
+            from unittest.mock import patch
+            with patch("backend.subprocess.run") as run_process:
+                run_process.side_effect = lambda command, **kwargs: subprocess.CompletedProcess(
+                    command, 0, "standalone:info sample.gdc", ""
+                )
+                result = backend.run("info", "sample.gdc")
+            invoked_command = run_process.call_args.args[0]
+            self.assertTrue(os.path.samefile(invoked_command[0], cli))
+            self.assertNotIn("python", " ".join(invoked_command).lower())
+            self.assertIn("standalone:info sample.gdc", result.stdout)
+
+    def test_frozen_backend_can_use_explicit_standalone_cli(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "opengds-cli.exe"
+            cli.write_text("#!/usr/bin/env python3\nprint('external cli')\n", encoding="utf-8")
+            cli.chmod(0o755)
+            with patch("backend.is_frozen_app", return_value=True):
+                backend = OpenGDSBackend(cli)
+            self.assertFalse(backend.embedded)
+            self.assertTrue(backend.standalone_executable)
+            self.assertTrue(os.path.samefile(backend.command("--help")[0], cli))
+
+    def test_frozen_default_backend_still_uses_embedded_dispatcher(self):
+        from unittest.mock import patch
+        with patch("backend.is_frozen_app", return_value=True):
+            backend = OpenGDSBackend()
+        self.assertTrue(backend.embedded)
+        self.assertIn("--opengds-cli", backend.command("info", "sample.gdc"))
+
+
+    def test_frozen_python_core_requires_real_interpreter(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            core = Path(td) / "OpenGDS.py"
+            core.write_text("print('core')\n", encoding="utf-8")
+            with patch("backend.is_frozen_app", return_value=True), patch("backend.shutil.which", return_value=None):
+                with self.assertRaisesRegex(BackendError, "Select opengds-cli.exe"):
+                    OpenGDSBackend(core)
+
     def test_compile_decompile_roundtrip(self):
         root=Path(__file__).resolve().parents[1]
         backend=OpenGDSBackend(root/"OpenGDS.py")
         with tempfile.TemporaryDirectory() as td:
             source=Path(td)/"sample.gd"; binary=Path(td)/"sample.gdc"
-            original='extends Node\n\nfunc _ready():\n    print("OpenGDS Studio")\n'
+            original='extends Node\n\nfunc _ready():\n    print("OpenGDS-IDE")\n'
             source.write_text(original,encoding="utf-8")
             backend.compile(source,binary,compressed=False,overwrite=True)
             self.assertTrue(binary.is_file()); self.assertTrue(binary.read_bytes().startswith(b"GDSC"))
             recovered=backend.decompile(binary)
-            self.assertIn('func _ready()',recovered); self.assertIn('OpenGDS Studio',recovered)
+            self.assertIn('func _ready()',recovered); self.assertIn('OpenGDS-IDE',recovered)
+    def test_run_cancels_long_running_open_gds_subprocess(self):
+        root = Path(__file__).resolve().parents[1]
+        backend = OpenGDSBackend(root / "OpenGDS.py")
+        backend.command = lambda *args: [sys.executable, "-c", "import time; time.sleep(10)"]
+        cancellation = threading.Event()
+        timer = threading.Timer(0.2, cancellation.set)
+        timer.start()
+        try:
+            with self.assertRaisesRegex(BackendError, "cancelled by user"):
+                backend.run("test-cancel", timeout=5, cancel_event=cancellation)
+        finally:
+            timer.cancel()
+            timer.join(timeout=1)
+
     def test_runtime_debug_dry_run_does_not_launch_engine(self):
         root=Path(__file__).resolve().parents[1]; backend=OpenGDSBackend(root/"OpenGDS.py")
         with tempfile.TemporaryDirectory() as td:

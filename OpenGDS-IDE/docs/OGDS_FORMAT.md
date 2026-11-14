@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A `.ogds` file is a JSON workspace descriptor owned by **OpenGDS - IDE**. It stores IDE settings that belong to a folder: its display name, root folder, optional Godot project path, OpenGDS core path, Godot executable, compile output/settings and debugger/editor preferences.
+A `.ogds` file is a JSON workspace descriptor owned by **OpenGDS-IDE**. It stores IDE settings that belong to a folder: its display name, root folder, optional Godot project path, OpenGDS core path, Godot executable, compile output/settings and debugger/editor preferences.
 
 It lets OpenGDS open a plain directory even if the directory is not a Godot project. It is not a Godot engine project file and does not replace `project.godot`. The Godot engine still requires `project.godot` for normal project/editor/run/import/export workflows.
 
@@ -85,7 +85,7 @@ Unknown extra JSON fields are retained when loaded/saved. Missing known fields a
 These files have different owners and purposes:
 
 - `project.godot` is read by Godot Engine. It identifies the engine project and holds engine project configuration.
-- `.ogds` is read by OpenGDS - IDE. It identifies an IDE workspace and stores OpenGDS-specific settings.
+- `.ogds` is read by OpenGDS-IDE. It identifies an IDE workspace and stores OpenGDS-specific settings.
 
 For a folder without `project.godot`, `.ogds` is enough to save its OpenGDS workspace and use OpenGDS `comp`, `dcmp`, `info`, `dbg` static mode, `audit`, `disasm`, `consts`, `hexdump` and `diff`. It is not enough to launch the Godot Editor, run/import/export a Godot project, use project-bound Godot LSP/DAP, or launch OpenGDS `dbg --godot/--interrupt`; those require a real Godot project.
 

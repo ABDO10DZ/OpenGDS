@@ -1,6 +1,7 @@
 """GDScript source editor widget with syntax coloring and breakpoint gutter."""
 from __future__ import annotations
 import re
+import difflib
 from PySide6.QtCore import Qt, QRect, QSize, QStringListModel, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QTextFormat, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QPlainTextEdit, QWidget, QCompleter, QTextEdit
@@ -71,6 +72,9 @@ class CodeEditor(QPlainTextEdit):
         self.theme = theme
         self.tab_width = int(tab_width)
         self.breakpoints: set[int] = set()
+        self.ai_added_lines: set[int] = set()
+        self.ai_removed_lines: set[int] = set()
+        self.ai_diff_path: str = ""
         self._completion_insertions: dict[str, str] = {}
         self.auto_pairs = True
         self.auto_indent = True
@@ -85,6 +89,8 @@ class CodeEditor(QPlainTextEdit):
         self.setFont(QFont("Consolas", 11))
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * self.tab_width)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.highlight_current_line()
         words = "func var const class class_name extends static signal enum return if elif else for while match when break continue pass await as is in not and or self super preload assert breakpoint print range len str int float bool Array Dictionary Node Node2D CharacterBody2D Control Vector2 Vector3 Color Input OS Engine get_node get_tree queue_free _ready _process _physics_process".split()
         self.completion_model = QStringListModel(words, self)
@@ -125,6 +131,12 @@ class CodeEditor(QPlainTextEdit):
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.setBrush(QColor("#e51400"))
                     painter.drawEllipse(3, top + 3, 9, 9)
+                # AI proposals are non-destructive decorations: the source buffer
+                # remains unchanged until the user accepts a reviewed proposal.
+                if number in self.ai_removed_lines:
+                    painter.fillRect(2, top + 1, 4, max(2, self.fontMetrics().height() - 2), QColor("#e4777b"))
+                if number in self.ai_added_lines:
+                    painter.fillRect(8, top + 1, 4, max(2, self.fontMetrics().height() - 2), QColor("#63c18c"))
                 painter.setPen(QColor("#858585" if self.theme != "light" else "#777777"))
                 painter.drawText(15, top, self.line_area.width() - 20, self.fontMetrics().height(), Qt.AlignmentFlag.AlignRight, str(number))
             block = block.next()
@@ -160,6 +172,28 @@ class CodeEditor(QPlainTextEdit):
 
     def highlight_current_line(self):
         selections = []
+        # Show proposed removals/replacements directly in the editor without
+        # touching the document or interfering with the syntax highlighter.
+        for line in sorted(self.ai_removed_lines):
+            block = self.document().findBlockByNumber(line - 1)
+            if not block.isValid():
+                continue
+            item = QTextEdit.ExtraSelection()
+            item.cursor = QTextCursor(block)
+            item.cursor.clearSelection()
+            item.format.setBackground(QColor("#4a252b" if self.theme != "light" else "#fce8e8"))
+            item.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            selections.append(item)
+        for line in sorted(self.ai_added_lines):
+            block = self.document().findBlockByNumber(line - 1)
+            if not block.isValid():
+                continue
+            item = QTextEdit.ExtraSelection()
+            item.cursor = QTextCursor(block)
+            item.cursor.clearSelection()
+            item.format.setBackground(QColor("#203a2d" if self.theme != "light" else "#e7f5ec"))
+            item.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            selections.append(item)
         if not self.isReadOnly():
             selection = QTextEdit.ExtraSelection()
             selection.format.setBackground(QColor("#2a2d2e" if self.theme != "light" else "#eef6fc"))
@@ -168,6 +202,43 @@ class CodeEditor(QPlainTextEdit):
             selection.cursor.clearSelection()
             selections.append(selection)
         self.setExtraSelections(selections)
+
+    def set_ai_diff_preview(self, proposed_text: str, *, path: str = "", base_text: str | None = None):
+        """Decorate changed source lines against a proposed AI result.
+
+        Added lines are represented by a green gutter marker at their insertion
+        point; removed/replaced source lines receive a subtle red line tint and
+        red gutter marker. No document text is modified.
+        """
+        before_source = self.toPlainText() if base_text is None else str(base_text)
+        before = before_source.splitlines()
+        after = str(proposed_text or "").splitlines()
+        matcher = difflib.SequenceMatcher(a=before, b=after)
+        added: set[int] = set()
+        removed: set[int] = set()
+        line_count = max(1, len(before))
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            if tag in {"replace", "delete"}:
+                removed.update(range(i1 + 1, min(i2, line_count) + 1))
+            if tag in {"replace", "insert"} and j2 > j1:
+                # Anchor additions to the corresponding existing line, or to
+                # the last line for append-only changes.
+                anchor = min(max(1, i1 + 1), line_count)
+                added.add(anchor)
+        self.ai_added_lines = added
+        self.ai_removed_lines = removed
+        self.ai_diff_path = str(path or "")
+        self.highlight_current_line()
+        self.line_area.update()
+
+    def clear_ai_diff(self):
+        self.ai_added_lines.clear()
+        self.ai_removed_lines.clear()
+        self.ai_diff_path = ""
+        self.highlight_current_line()
+        self.line_area.update()
 
     def set_theme(self, theme):
         self.theme = theme

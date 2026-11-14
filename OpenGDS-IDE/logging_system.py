@@ -1,4 +1,4 @@
-"""Categorized, rotating logging shared by the Studio GUI and OpenGDS core."""
+"""Categorized, rotating logging shared by the OpenGDS-IDE GUI and OpenGDS core."""
 from __future__ import annotations
 
 import logging
@@ -10,7 +10,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-APP_LOG_DIR = Path.home() / ".opengds-studio" / "logs"
+APP_LOG_DIR = Path.home() / ".opengds-ide" / "logs"
 
 # Stable category palette used by the GUI log viewer and documented log files.
 CATEGORY_COLORS = {
@@ -28,6 +28,8 @@ CATEGORY_COLORS = {
     "BUILD": "#C586C0",
     "FILE": "#D4D4D4",
     "ARCHIVE": "#D16969",
+    "AI": "#C586C0",
+    "GIT": "#F1C40F",
     "SYSTEM": "#808080",
 }
 
@@ -42,7 +44,7 @@ def configure_logging(log_file: str | Path | None = None, *, level: int = loggin
     """Configure a dedicated logger with a UTF-8 rotating file sink."""
     directory = log_directory()
     directory.mkdir(parents=True, exist_ok=True)
-    target = Path(log_file).expanduser().resolve() if log_file else directory / "studio.log"
+    target = Path(log_file).expanduser().resolve() if log_file else directory / "opengds-ide.log"
     target.parent.mkdir(parents=True, exist_ok=True)
 
     logger = logging.getLogger(logger_name)
@@ -79,6 +81,35 @@ class _DefaultCategoryFilter(logging.Filter):
         return True
 
 
+def close_logging(logger_name: str = "opengds") -> None:
+    """Detach and fully close the application's file handlers.
+
+    Explicitly close the underlying stream before closing the handler. This is
+    useful on Windows, where a lingering file handle prevents TemporaryDirectory
+    cleanup and can also block log rotation or application shutdown.
+    """
+    logger = logging.getLogger(logger_name)
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.acquire()
+            try:
+                stream = getattr(handler, "stream", None)
+                if stream is not None:
+                    try:
+                        handler.flush()
+                    finally:
+                        try:
+                            stream.close()
+                        finally:
+                            # FileHandler.close() must not see a stale stream.
+                            handler.stream = None
+            finally:
+                handler.release()
+        finally:
+            handler.close()
+
+
 def category_logger(category: str) -> logging.LoggerAdapter:
     category = str(category or "SYSTEM").upper()
     if category not in CATEGORY_COLORS:
@@ -113,6 +144,12 @@ def install_exception_hooks() -> None:
             "Uncaught Python exception",
             exc_info=(exc_type, exc_value, exc_tb),
         )
+        # Do not hide failures from developers running `python main.py`.
+        # The file log remains available for GUI-subsystem / pythonw launches.
+        try:
+            old_sys_hook(exc_type, exc_value, exc_tb)
+        except Exception:
+            pass
 
     sys.excepthook = sys_hook
 
