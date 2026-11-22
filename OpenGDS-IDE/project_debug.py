@@ -3,12 +3,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-BLOCKED_DIRS = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", "node_modules", "__pycache__", ".venv", "venv", "build", "dist"}
+BLOCKED_DIRS = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", "node_modules", "__pycache__", ".venv", "venv", "build", "dist", ".godot", ".opengds", ".opengds-ide", ".tox", ".pytest_cache"}
 BLOCKED_NAMES = {"secrets.json", "credentials.json", "token.json", "auth.json", ".npmrc", ".netrc", ".git-credentials", "service-account.json"}
 BLOCKED_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
 
 _ERROR = re.compile(r"(?P<path>(?:res://)?(?:[A-Za-z]:[\\/]|/)?[^:\n]+\.(?:gd|py|js|ts|cs|cpp|c|rs|go|java|kt|gdc)):(?P<line>\d+)(?::(?P<column>\d+))?:\s*(?P<message>.+)", re.I)
-_TRACE = re.compile(r"(?:File \"(?P<pyfile>[^\"]+)\", line (?P<pyline>\d+)|(?P<path>(?:res://)?[^:\n]+\.(?:gd|cs|cpp|js|ts|java|rs)):(?P<line>\d+))", re.I)
+_TRACE = re.compile(r"(?:File \"(?P<pyfile>[^\"]+)\", line (?P<pyline>\d+)|(?P<path>(?:res://)?[^:\n]+\.(?:gd|py|cs|cpp|js|ts|java|rs|go|kt)):(?P<line>\d+))", re.I)
 
 def parse_diagnostics(text: str, limit: int = 100) -> list[dict]:
     rows=[]
