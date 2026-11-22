@@ -131,6 +131,14 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             running = IDEControlBridge(FakeWindow(root, [], stack_rows, breakpoint_rows, running_dap)).call("ide_get_debug_state")
             self.assertEqual(running["state"], "running")
             self.assertEqual(running["call_stack"], [])
+            disconnected_dap = SimpleNamespace(
+                socket=SimpleNamespace(state=lambda: QAbstractSocket.SocketState.UnconnectedState),
+                frame_id=42, thread_id=3, pending={},
+            )
+            disconnected = IDEControlBridge(FakeWindow(root, [], stack_rows, breakpoint_rows, disconnected_dap)).call("ide_get_debug_state")
+            self.assertEqual(disconnected["state"], "disconnected")
+            self.assertFalse(disconnected["connected"])
+            self.assertEqual(disconnected["call_stack"], [])
 
     def test_caps_returned_diagnostics_to_one_hundred(self):
         with tempfile.TemporaryDirectory() as td:
