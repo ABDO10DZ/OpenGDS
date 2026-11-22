@@ -191,13 +191,13 @@ class AgentEngineTests(unittest.TestCase):
         import subprocess
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            (root / "main.gd").write_text("extends Node\\n", encoding="utf-8")
+            (root / "main.gd").write_text("extends Node\n", encoding="utf-8")
             subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
             subprocess.run(["git", "-C", str(root), "config", "user.email", "tests@example.invalid"], check=True)
             subprocess.run(["git", "-C", str(root), "config", "user.name", "OpenGDS Tests"], check=True)
             subprocess.run(["git", "-C", str(root), "add", "main.gd"], check=True)
             subprocess.run(["git", "-C", str(root), "commit", "-m", "baseline"], check=True, capture_output=True)
-            (root / "main.gd").write_text("extends Node\\nfunc _ready():\\n    pass\\n", encoding="utf-8")
+            (root / "main.gd").write_text("extends Node\nfunc _ready():\n    pass\n", encoding="utf-8")
             (root / ".env").write_text("TOKEN=never-return-this\\n", encoding="utf-8")
             engine = AgentEngine(root, AgentConfig(agent_mode="ask"))
             status = engine._execute_tool("git_status", {})
