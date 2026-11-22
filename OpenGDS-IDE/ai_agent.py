@@ -1168,7 +1168,7 @@ class AgentEngine:
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
             return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + DEBUG_TOOLS + PROJECT_REVIEW_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + DEBUG_TOOLS + PROJECT_REVIEW_TOOLS + PROJECT_VALIDATION_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
