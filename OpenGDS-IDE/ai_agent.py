@@ -315,6 +315,14 @@ READ_ONLY_TOOLS = OPENAI_TOOLS[:3]
 OPENGDS_READ_TOOLS = [
     {"type": "function", "function": {"name": "opengds_inspect", "description": "Use the bundled OpenGDS core API to inspect a GDSC file. Supports info, audit, consts, disasm, hexdump and static dbg modes. Read-only.", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["info", "audit", "consts", "disasm", "hexdump", "dbg"]}, "path": {"type": "string"}}, "required": ["mode", "path"], "additionalProperties": False}}},
 ]
+IDE_CONTROL_TOOLS = [
+    {"type": "function", "function": {"name": "ide_get_state", "description": "Read the active OpenGDS-IDE workspace, editor, cursor and open tabs.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_open_file", "description": "Open an existing, non-sensitive workspace-relative file in the IDE editor. This only changes the UI.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_go_to_line", "description": "Navigate the active editor to a line and optional column.", "parameters": {"type": "object", "properties": {"line": {"type": "integer", "minimum": 1}, "column": {"type": "integer", "minimum": 0}}, "required": ["line"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_focus_panel", "description": "Show and focus an IDE panel.", "parameters": {"type": "object", "properties": {"panel": {"type": "string", "enum": ["explorer", "source_control", "code_insight", "ai_assistant", "output"]}}, "required": ["panel"], "additionalProperties": False}}},
+]
+
+
 OPENGDS_AGENT_TOOLS = OPENGDS_READ_TOOLS + [
     {"type": "function", "function": {"name": "opengds_decompile", "description": "Decompile a .gdc file through OpenGDS-IDE's bundled OpenGDS.py backend. The reconstructed .gd source is proposed for review and is not written until the user approves it.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "output": {"type": "string"}, "reason": {"type": "string"}}, "required": ["path", "reason"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "opengds_compile", "description": "Prepare a GDScript-to-GDSC compile operation using OpenGDS-IDE's bundled OpenGDS.py backend. The .gdc output is not created or overwritten until the user approves the operation.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "output": {"type": "string"}, "compressed": {"type": "boolean"}, "tab_size": {"type": "integer", "minimum": 1, "maximum": 16}, "reason": {"type": "string"}}, "required": ["path", "reason"], "additionalProperties": False}}},
@@ -335,13 +343,14 @@ class AgentEngine:
     """Workspace-scoped, tool-using AI agent with explicit approval for writes/commands."""
 
     def __init__(self, workspace: str | Path, config: AgentConfig,
-                 *, credential_store: CredentialStore | None = None, backend=None):
+                 *, credential_store: CredentialStore | None = None, backend=None, ide_controller=None):
         self.workspace = Path(workspace).expanduser().resolve()
         if not self.workspace.is_dir():
             raise NotADirectoryError(self.workspace)
         self.config = config
         self.credential_store = credential_store or CredentialStore()
         self.backend = backend
+        self.ide_controller = ide_controller
         if not self.config.api_key:
             self.config.api_key = self.credential_store.get(self.config.provider)
         self.history: list[dict[str, str]] = []
@@ -617,6 +626,10 @@ class AgentEngine:
 
     def _execute_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
+            if name.startswith("ide_"):
+                if self.ide_controller is None:
+                    raise RuntimeError("IDE control tools are unavailable in this agent session.")
+                return self.ide_controller.call(name, args)
             if name == "list_files":
                 return {"files": self._project_files(int(args.get("limit", 200)))}
             if name == "read_file":
@@ -945,8 +958,8 @@ class AgentEngine:
         """Expose workspace tools plus native OpenGDS tools when in OpenGDS focus."""
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
-            return READ_ONLY_TOOLS + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+            return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
