@@ -57,26 +57,18 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Verify MCP server imports
         run: python -c "from mcp.server.fastmcp import FastMCP; from mcp_server import OpenGDSMCPService, build_server; print('MCP SDK integration import OK')"
-      - name: Create macOS application icon
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p build/opengds-ide.iconset
-          SOURCE_ICON="assets/opengds-ide.png"
-          ICONSET="build/opengds-ide.iconset"
-          sips -z 16 16 "$SOURCE_ICON" --out "$ICONSET/icon_16x16.png" >/dev/null
-          sips -z 32 32 "$SOURCE_ICON" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
-          sips -z 32 32 "$SOURCE_ICON" --out "$ICONSET/icon_32x32.png" >/dev/null
-          sips -z 64 64 "$SOURCE_ICON" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
-          sips -z 128 128 "$SOURCE_ICON" --out "$ICONSET/icon_128x128.png" >/dev/null
-          sips -z 256 256 "$SOURCE_ICON" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
-          sips -z 256 256 "$SOURCE_ICON" --out "$ICONSET/icon_256x256.png" >/dev/null
-          sips -z 512 512 "$SOURCE_ICON" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
-          sips -z 512 512 "$SOURCE_ICON" --out "$ICONSET/icon_512x512.png" >/dev/null
-          sips -z 1024 1024 "$SOURCE_ICON" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
-          iconutil -c icns "$ICONSET" -o build/opengds-ide.icns
-      - name: Build platform-native frozen application
-        run: python -m PyInstaller --clean --noconfirm OpenGDS-IDE.spec
-      - name: Smoke-test frozen application and embedded core
-        run: python tests/smoke_frozen_bundle.py
+      - name: Build and smoke-test Windows installer script
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build_gui.bat
+      - name: Validate Unix packaging script syntax
+        if: runner.os != 'Windows'
+        run: bash -n build_gui.sh
+      - name: Build and smoke-test Linux/macOS installer script
+        if: runner.os != 'Windows'
+        env:
+          PYTHON: python
+          OPENGDS_BUILD_USE_CURRENT_PYTHON: "1"
+          OPENGDS_BUILD_SKIP_INSTALL: "1"
+          OPENGDS_BUILD_SKIP_TESTS: "1"
+        run: bash build_gui.sh
