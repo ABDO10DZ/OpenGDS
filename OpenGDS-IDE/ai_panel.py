@@ -132,7 +132,7 @@ class AgentSettingsDialog(QDialog):
         self.base_url = QLineEdit(str(settings.value("ai/base_url", PROVIDERS[current_provider]["base_url"])))
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText("Paste your provider key · stored for this Windows user")
+        self.api_key.setPlaceholderText("Paste your provider key · stored in your operating-system keychain")
         self.key_note = QLabel()
         self.key_note.setWordWrap(True)
         self.key_link = QPushButton("Get API key…")
@@ -182,7 +182,7 @@ class AgentSettingsDialog(QDialog):
             self.model.setText(preset.get("default_model", ""))
         requires_key = preset.get("requires_api_key", True)
         self.api_key.setEnabled(requires_key)
-        self.api_key.setPlaceholderText("Not required for local Ollama" if not requires_key else "Paste your provider key · stored for this Windows user")
+        self.api_key.setPlaceholderText("Not required for local Ollama" if not requires_key else "Paste your provider key · stored in your operating-system keychain")
         self.key_link.setEnabled(bool(preset.get("signup_url")))
         self.key_note.setText(f"{preset.get('tier', 'Custom')}\n{preset.get('note', '')}")
 
