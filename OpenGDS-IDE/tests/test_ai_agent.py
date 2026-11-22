@@ -176,7 +176,7 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
             names = [item["function"]["name"] for item in engine.available_tools()]
-            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact", "debug_analyze_error", "debug_parse_stack_trace", "debug_source_context"])
+            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact", "debug_analyze_error", "debug_parse_stack_trace", "debug_source_context", "project_review_file", "project_review_workspace"])
             self.assertNotIn("propose_change", names)
             self.assertNotIn("propose_command", names)
 
@@ -601,3 +601,18 @@ if __name__ == "__main__":
             self.assertEqual(frames["frames"][0]["line"], 7)
             excerpt = engine._execute_tool("debug_source_context", {"path": "player.gd", "line": 2})
             self.assertTrue(any(row["focus"] for row in excerpt["excerpt"]))
+
+    def test_project_review_tools_available_and_restrict_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"bad.py").write_text("eval(x)\n# TODO\n",encoding="utf-8")
+            engine=AgentEngine(root,AgentConfig(agent_mode="ask",scope="all"))
+            names=[row["function"]["name"] for row in engine.available_tools()]
+            self.assertIn("project_review_file",names)
+            self.assertIn("project_review_workspace",names)
+            review=engine._execute_tool("project_review_file",{"path":"bad.py"})
+            self.assertEqual(review["counts"]["high"],1)
+            workspace=engine._execute_tool("project_review_workspace",{"limit":5})
+            self.assertEqual(workspace["counts"]["low"],1)
+            blocked=engine._execute_tool("project_review_file",{"path":".env"})
+            self.assertIn("error",blocked)
