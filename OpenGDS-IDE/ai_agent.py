@@ -73,6 +73,8 @@ EXCLUDED_DIRS = {
 SENSITIVE_NAMES = {
     "secrets.json", "credentials.json", "credentials.db", "token.json",
     "id_rsa", "id_ed25519", "known_hosts", "authorized_keys",
+    ".npmrc", ".pypirc", ".netrc", ".git-credentials", "auth.json",
+    "service-account.json", "access_token", "refresh_token", ".dockerconfigjson",
 }
 SENSITIVE_SUFFIXES = {".pfx", ".p12", ".pem", ".key", ".keystore", ".cer", ".crt"}
 MAX_READ_BYTES = 200_000
