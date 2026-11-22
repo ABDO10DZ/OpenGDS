@@ -307,3 +307,8 @@ When the Qt IDE bridge is attached, Ask and Agent modes expose `ide_get_diagnost
 ## Live Godot debugger context for AI
 
 When the IDE bridge is attached, `ide_get_debug_state` reads the current Godot DAP connection state, up to 50 safe call-stack source locations, and up to 200 workspace breakpoints. It filters paths outside the project and sensitive locations. It intentionally does not expose local variable values or send execution-control commands. The agent can use the returned file/line references with `ide_open_file`, `ide_go_to_line` and `debug_source_context` to investigate a paused runtime session while the developer retains control of stepping, continuing and stopping execution.
+
+
+### PySide6 runtime compatibility
+
+OpenGDS-IDE currently constrains PySide6 to `>=6.7,<6.12`. Qt's PySide6 6.12.0 wheels have a documented CPython 3.10/3.11 reference-count regression in `Signal.emit()` that can terminate the process with `bool_dealloc`. Keep the upper bound until a corrected Qt for Python release is available and validated. The test suite includes a direct `sys.getrefcount(True)` regression check over repeated signal emissions on affected Python versions.
