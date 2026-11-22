@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 from ai_providers import get_provider_adapter
 from ai_models import describe_model
 from project_tasks import discover_project_tasks
+from task_planner import build_task_plan
 
 
 PROVIDERS = {
@@ -325,12 +326,17 @@ GIT_READ_TOOLS = [
 ]
 
 
+TASK_PLAN_TOOLS = [
+    {"type": "function", "function": {"name": "create_task_plan", "description": "Create a visible, bounded task plan for the user's coding goal. Planning is not execution; each command still requires separate user approval.", "parameters": {"type": "object", "properties": {"goal": {"type": "string"}, "steps": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "object", "properties": {"title": {"type": "string"}, "description": {"type": "string"}, "task_id": {"type": "string"}}, "required": ["title"], "additionalProperties": False}}}, "required": ["goal", "steps"], "additionalProperties": False}}},
+]
+
+
 PROJECT_TASK_TOOLS = [
     {"type": "function", "function": {"name": "detect_project_tasks", "description": "Detect known project test/build tasks by inspecting safe manifests. This never executes commands; returned commands still require explicit approval.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
 ]
 
 
-READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS
+READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS
 
 OPENGDS_READ_TOOLS = [
     {"type": "function", "function": {"name": "opengds_inspect", "description": "Use the bundled OpenGDS core API to inspect a GDSC file. Supports info, audit, consts, disasm, hexdump and static dbg modes. Read-only.", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["info", "audit", "consts", "disasm", "hexdump", "dbg"]}, "path": {"type": "string"}}, "required": ["mode", "path"], "additionalProperties": False}}},
@@ -375,6 +381,7 @@ class AgentEngine:
             self.config.api_key = self.credential_store.get(self.config.provider)
         self.history: list[dict[str, str]] = []
         self.pending: dict[str, PendingAction] = {}
+        self.task_plan: dict[str, Any] | None = None
         self._lock = threading.RLock()
         self._request_cancel_event: threading.Event | None = None
         self._active_response = None
@@ -405,6 +412,7 @@ class AgentEngine:
             self.workspace = root
             self.history.clear()
             self.pending.clear()
+            self.task_plan = None
 
     def _safe_path(self, relative: str, *, for_write: bool = False) -> Path:
         value = str(relative or "").strip().replace("\\", "/")
@@ -666,6 +674,12 @@ class AgentEngine:
                 except UnicodeDecodeError as exc:
                     raise ValueError("Binary or non-UTF-8 files cannot be read by the agent.") from exc
                 return {"path": path.relative_to(self.workspace).as_posix(), "content": content}
+            if name == "create_task_plan":
+                tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
+                plan = build_task_plan(args.get("goal", ""), args.get("steps", []), tasks)
+                with self._lock:
+                    self.task_plan = plan
+                return {"plan": plan, "message": "Plan created for user review. No files were changed and no commands were executed."}
             if name == "detect_project_tasks":
                 tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
                 return {"tasks": tasks, "count": len(tasks),
@@ -1037,7 +1051,7 @@ class AgentEngine:
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
             return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
