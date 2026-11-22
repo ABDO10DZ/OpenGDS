@@ -103,9 +103,14 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             breakpoint.write_text("extends Node\n", encoding="utf-8")
             external = Path(outside) / "external.gd"
             external.write_text("extends Node\n", encoding="utf-8")
+            virtual_env = root / ".venv"
+            virtual_env.mkdir()
+            generated = virtual_env / "library.gd"
+            generated.write_text("extends Node\n", encoding="utf-8")
             stack_rows = [
                 FakeProblem("move_player  —  player.gd:7", (str(frame), 7, 2)),
                 FakeProblem("external  —  external.gd:2", (str(external), 2, 0)),
+                FakeProblem("generated  —  library.gd:4", (str(generated), 4, 0)),
             ]
             breakpoint_rows = [FakeProblem("enemy.gd:5", (str(breakpoint), 5))]
             dap = SimpleNamespace(
