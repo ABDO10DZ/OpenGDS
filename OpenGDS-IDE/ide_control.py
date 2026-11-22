@@ -11,6 +11,7 @@ import threading
 from pathlib import Path, PureWindowsPath
 
 from PySide6.QtCore import QObject, QThread, Signal, Qt
+from PySide6.QtNetwork import QAbstractSocket
 
 
 class IDEControlBridge(QObject):
@@ -147,6 +148,67 @@ class IDEControlBridge(QObject):
             return {"workspace": root.name, "diagnostics": rows, "count": len(rows),
                     "truncated": int(problems.count()) > 100,
                     "source": "IDE Problems panel; structured diagnostics only, not raw logs"}
+        if name == "ide_get_debug_state":
+            root = self._workspace()
+            dap = getattr(window, "dap", None)
+            socket = getattr(dap, "socket", None) if dap is not None else None
+            try:
+                connected = bool(socket and socket.state() == QAbstractSocket.SocketState.ConnectedState)
+            except Exception:
+                connected = False
+            paused = bool(dap is not None and getattr(dap, "frame_id", None) is not None)
+
+            def safe_location(data):
+                if not isinstance(data, (tuple, list)) or len(data) < 2:
+                    return None
+                try:
+                    candidate = Path(str(data[0])).expanduser().resolve(strict=False)
+                    relative = candidate.relative_to(root).as_posix()
+                    parts = [part.lower() for part in Path(relative).parts]
+                    blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets",
+                                    ".godot", ".opengds", ".opengds-ide"}
+                    blocked_names = {"secrets.json", "credentials.json", "credentials.db", "token.json",
+                                     "auth.json", ".npmrc", ".pypirc", ".netrc", ".git-credentials",
+                                     "service-account.json"}
+                    blocked_suffixes = {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
+                    if any(part in blocked_dirs or part.startswith(".env") or part in blocked_names
+                           or Path(part).suffix.lower() in blocked_suffixes for part in parts):
+                        return None
+                    current = root
+                    for part in Path(relative).parts:
+                        current = current / part
+                        if current.is_symlink():
+                            return None
+                    if not candidate.is_file():
+                        return None
+                    return {"path": relative, "line": max(1, int(data[1])),
+                            "column": max(0, int(data[2] or 0)) if len(data) > 2 else 0}
+                except (OSError, ValueError, TypeError):
+                    return None
+
+            stack = []
+            stack_view = getattr(window, "call_stack_view", None)
+            if stack_view is not None:
+                for index in range(min(int(stack_view.count()), 50)):
+                    item = stack_view.item(index)
+                    location = safe_location(item.data(Qt.ItemDataRole.UserRole))
+                    if location:
+                        label = str(item.text() or "")[:300]
+                        stack.append({"function": label.split("  —  ", 1)[0], **location})
+            breakpoints = []
+            breakpoint_view = getattr(window, "breakpoints_view", None)
+            if breakpoint_view is not None:
+                for index in range(min(int(breakpoint_view.count()), 200)):
+                    item = breakpoint_view.item(index)
+                    location = safe_location(item.data(Qt.ItemDataRole.UserRole))
+                    if location:
+                        breakpoints.append(location)
+            state = "paused" if paused else ("running" if connected else "disconnected")
+            return {"workspace": root.name, "state": state, "connected": connected,
+                    "thread_id": int(getattr(dap, "thread_id", 0) or 0) if dap is not None else None,
+                    "call_stack": stack, "breakpoints": breakpoints,
+                    "pending_debug_requests": len(getattr(dap, "pending", {}) or {}) if dap is not None else 0,
+                    "note": "Read-only debugger metadata. Local variable values are intentionally not exposed."}
         if name == "ide_open_file":
             path = self._relative_file(args.get("path", ""))
             window.open_path(path)
