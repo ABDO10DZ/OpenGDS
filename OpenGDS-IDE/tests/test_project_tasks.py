@@ -56,13 +56,14 @@ class ProjectTaskDiscoveryTests(unittest.TestCase):
             self.assertIn("cmake-test", tasks)
             self.assertNotIn("cmake-configure", tasks)
 
-    def test_safe_path_policy_blocks_secret_manifest(self):
+    def test_agent_exposes_manifest_discovery_without_running_scripts(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "package.json").write_text('{"scripts":{"test":"echo test"}}', encoding="utf-8")
             engine = AgentEngine(root, AgentConfig())
             result = engine._execute_tool("detect_project_tasks", {})
-            self.assertEqual(result["count"], 0)
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["tasks"][0]["command"], ["npm", "test"])
             self.assertIn("detect_project_tasks", {tool["function"]["name"] for tool in engine.available_tools()})
 
     def test_detection_tool_is_available_in_ask_mode_and_does_not_execute(self):
