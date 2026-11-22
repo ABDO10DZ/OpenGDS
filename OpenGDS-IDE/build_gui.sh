@@ -70,7 +70,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   sips -z 1024 1024 "$SOURCE_ICON" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
   iconutil -c icns "$ICONSET" -o build/opengds-ide.icns
 else
-  echo "[3/5] Linux packaging uses the application PNG and native desktop icon metadata."
+  echo "[3/5] Linux packaging includes the application PNG inside the self-contained bundle."
 fi
 
 echo "[4/5] Building the platform-native application bundle..."
