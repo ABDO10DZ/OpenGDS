@@ -5,6 +5,7 @@ It never runs tests or modifies the workspace.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path, PureWindowsPath
