@@ -221,6 +221,8 @@ class AgentEngineTests(unittest.TestCase):
             names = [item["function"]["name"] for item in engine.available_tools()]
             self.assertIn("propose_change", names)
             self.assertIn("propose_command", names)
+            self.assertIn("project_review_file", names)
+            self.assertIn("project_review_workspace", names)
 
     def test_free_provider_presets_are_available_by_default(self):
         self.assertEqual(AgentConfig().provider, "OpenRouter Free")
