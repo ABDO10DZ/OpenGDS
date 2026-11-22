@@ -3586,6 +3586,14 @@ def main() -> int:
         window.show()
         window.raise_()
         window.activateWindow()
+        if os.environ.get("OPENGDS_GUI_SMOKE", "").strip() == "1":
+            # CI launches the frozen executable with the offscreen Qt platform,
+            # constructs the real main window, processes initial events and
+            # closes cleanly without entering the interactive event loop.
+            app.processEvents()
+            window.close()
+            app.processEvents()
+            return 0
         return int(app.exec())
     except KeyboardInterrupt:
         return 130
