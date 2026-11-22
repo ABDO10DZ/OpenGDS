@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtNetwork import QAbstractSocket
 from types import SimpleNamespace
 
@@ -34,9 +34,8 @@ class FakeProblems:
         return self.rows[index]
 
 
-class FakeWindow(QObject):
+class FakeWindow:
     def __init__(self, root, rows, stack_rows=None, breakpoint_rows=None, dap=None):
-        super().__init__()
         self._root = root
         self.problems = FakeProblems(rows)
         self.call_stack_view = FakeProblems(stack_rows or [])
