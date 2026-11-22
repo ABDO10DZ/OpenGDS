@@ -1,6 +1,6 @@
 """Provider-neutral AI agent engine with workspace-scoped tools and approval-gated actions.
 
-API credentials are kept out of settings/logs and protected with Windows DPAPI.
+API credentials are kept out of settings/logs and protected by the operating-system keyring.
 File changes and commands are proposed first; nothing is changed or executed until
 an explicit approval call is made by the UI.
 """
