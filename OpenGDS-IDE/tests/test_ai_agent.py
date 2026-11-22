@@ -36,6 +36,7 @@ class AgentEngineTests(unittest.TestCase):
             self.assertIn("ide_open_file", names)
             self.assertIn("ide_go_to_line", names)
             self.assertIn("ide_focus_panel", names)
+            self.assertIn("ide_get_diagnostics", names)
             result = with_bridge._execute_tool("ide_get_state", {})
             self.assertEqual(result["tool"], "ide_get_state")
 
