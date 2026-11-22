@@ -182,6 +182,10 @@ The built-in AI agent can use the IDE itself through a small allow-listed Qt bri
 
 These UI actions run on the Qt GUI thread. They are navigation/view operations only; file writes and command execution continue through the existing proposal-and-approval workflow.
 
+### Architecture tracing and change-impact estimates
+
+The AI can produce a static architecture inventory (`project_architecture_summary`), trace symbol names to indexed files (`project_trace_symbol`), and estimate candidate files affected by a change (`project_change_impact`). The impact estimate combines shared declarations and symbol-name matches. It is deliberately labeled heuristic: it is not a complete dependency graph, call graph, or proof of runtime impact. Refresh the index before analysis when the workspace has changed.
+
 ### Persistent project intelligence
 
 The AI agent can build an incremental local symbol index with `project_index_refresh`, inspect its size with `project_index_status`, search declarations/references with `project_symbol_search`, and discover files sharing symbols via `project_related_files`. The index is stored in the user's OS cache (outside the workspace), persists between IDE sessions, and refreshes changed files using file metadata. It stores only symbol names, file paths, line numbers, hashes and metadata—not source contents. Indexing is bounded (5,000 files; 200 KB per file), respects assistant focus, excludes credential paths and common build/cache folders, and does not follow symlinks. Python symbols use AST; other supported languages use conservative declaration patterns, so results are navigational hints rather than a full language semantic graph.
