@@ -18,7 +18,8 @@ class ProjectValidationTests(unittest.TestCase):
             self.assertEqual([row["path"] for row in result["selected_tests"]], ["tests/test_ai_agent.py"])
             self.assertEqual(len(result["commands"]), 1)
             self.assertIn("test_ai_agent.py", result["commands"][0]["command"])
-            self.assertTrue(result["commands"][0]["approval_required"])\n            self.assertEqual(result["commands"][0]["task_id"], "python-unittest")
+            self.assertTrue(result["commands"][0]["approval_required"])
+            self.assertEqual(result["commands"][0]["task_id"], "python-unittest")
             self.assertFalse(result["full_suite_recommended"])
 
     def test_test_file_change_selects_itself(self):
