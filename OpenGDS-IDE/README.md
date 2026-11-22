@@ -190,6 +190,10 @@ The built-in AI agent now has two additional read-only Git tools:
 
 The agent can inspect existing user changes before proposing edits, then re-check the diff after the user approves changes. These tools do not stage, commit, reset, checkout, or push anything. Git operations are invoked with fixed argument arrays (no shell) and require the active workspace to be the repository root.
 
+### Project-aware test and build discovery
+
+The agent exposes `detect_project_tasks` in both Ask and Agent modes. It inspects known manifests and project markers to suggest supported checks for Python/unittest/pytest, npm test scripts, Rust, CMake/CTest and Godot headless editor scans. Discovery does not execute scripts or commands and does not evaluate arbitrary manifest hooks. Returned commands are fixed argument arrays; the agent must submit a selected command through `propose_command`, which remains blocked until the user approves it. The agent can then inspect the real command output and report the result; discovery alone is never reported as a passing test.
+
 The normal Agent workflow remains approval-gated: file changes and test/build commands are proposals; commands run only after the user approves them. The agent must report actual test output rather than treating a proposed command as a successful test.
 
 ### OpenGDS MCP server
