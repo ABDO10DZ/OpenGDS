@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 from ai_providers import get_provider_adapter
 from ai_models import describe_model
+from project_tasks import discover_project_tasks
 
 
 PROVIDERS = {
@@ -324,7 +325,12 @@ GIT_READ_TOOLS = [
 ]
 
 
-READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS
+PROJECT_TASK_TOOLS = [
+    {"type": "function", "function": {"name": "detect_project_tasks", "description": "Detect known project test/build tasks by inspecting safe manifests. This never executes commands; returned commands still require explicit approval.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+]
+
+
+READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS
 
 OPENGDS_READ_TOOLS = [
     {"type": "function", "function": {"name": "opengds_inspect", "description": "Use the bundled OpenGDS core API to inspect a GDSC file. Supports info, audit, consts, disasm, hexdump and static dbg modes. Read-only.", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["info", "audit", "consts", "disasm", "hexdump", "dbg"]}, "path": {"type": "string"}}, "required": ["mode", "path"], "additionalProperties": False}}},
@@ -660,6 +666,10 @@ class AgentEngine:
                 except UnicodeDecodeError as exc:
                     raise ValueError("Binary or non-UTF-8 files cannot be read by the agent.") from exc
                 return {"path": path.relative_to(self.workspace).as_posix(), "content": content}
+            if name == "detect_project_tasks":
+                tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
+                return {"tasks": tasks, "count": len(tasks),
+                        "message": "Discovery only: no command was executed. Select a task and submit its command through propose_command for explicit approval."}
             if name == "git_status":
                 root_result = subprocess.run(
                     ["git", "-C", str(self.workspace), "rev-parse", "--show-toplevel"],
@@ -1027,7 +1037,7 @@ class AgentEngine:
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
             return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + GIT_READ_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
