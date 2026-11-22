@@ -34,7 +34,7 @@ _FULL_SUITE_NAMES = {
 
 
 def _safe_relative(value: str) -> str:
-    raw = str(value or "").strip().replace("\\\\", "/")
+    raw = str(value or "").strip().replace("\\", "/")
     if not raw or "\x00" in raw:
         raise ValueError("Changed paths must be non-empty workspace-relative paths.")
     path = Path(raw)
@@ -54,7 +54,7 @@ def _is_test_file(path: Path) -> bool:
 
 def _discover_tests(root: Path) -> list[Path]:
     found = []
-    for current, dirs, files in __import__("os").walk(root, followlinks=False):
+    for current, dirs, files in os.walk(root, followlinks=False):
         base = Path(current)
         dirs[:] = [d for d in dirs if d.lower() not in EXCLUDED_DIRS
                    and not (base / d).is_symlink()]
@@ -113,7 +113,7 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
         name = path.name.lower()
         if name in _FULL_SUITE_NAMES or name.endswith((".lock", ".lockb")) or name.startswith("requirements"):
             broad_reasons.append(f"{rel} is a project-wide dependency/build/configuration file")
-        if ".github/workflows" in rel.lower().replace("\\\\", "/"):
+        if ".github/workflows" in rel.lower().replace("\\", "/"):
             broad_reasons.append(f"{rel} changes CI workflow behavior")
 
         stem = path.stem.lower()
