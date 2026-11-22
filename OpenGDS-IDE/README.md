@@ -194,6 +194,10 @@ The agent can inspect existing user changes before proposing edits, then re-chec
 
 The agent exposes `detect_project_tasks` in both Ask and Agent modes. It inspects known manifests and project markers to suggest supported checks for Python/unittest/pytest, npm test scripts, Rust, CMake/CTest and Godot headless editor scans. Discovery does not execute scripts or commands and does not evaluate arbitrary manifest hooks. Returned commands are fixed argument arrays; the agent must submit a selected command through `propose_command`, which remains blocked until the user approves it. The agent can then inspect the real command output and report the result; discovery alone is never reported as a passing test.
 
+### Visible task planning
+
+For multi-step work, the agent can create a bounded plan (up to eight steps) linked to discovered validation tasks. The plan appears in the AI panel's **Task Plan** tab with its goal, ordered steps, and execution policy. Plans are workspace-scoped and reset when the active workspace changes. Creating a plan is non-destructive; each proposed command remains a separate approval decision. The agent is instructed to inspect actual command output and report a passing check only when the approved process exits successfully.
+
 The normal Agent workflow remains approval-gated: file changes and test/build commands are proposals; commands run only after the user approves them. The agent must report actual test output rather than treating a proposed command as a successful test.
 
 ### OpenGDS MCP server
