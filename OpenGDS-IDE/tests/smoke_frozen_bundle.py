@@ -35,6 +35,7 @@ def run_checked(command: list[str], *, timeout: int = 90, env: dict[str, str] | 
             errors="replace",
             timeout=timeout,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
