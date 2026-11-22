@@ -80,6 +80,20 @@ def _discover_tests(root: Path) -> list[Path]:
     return found
 
 
+
+def _uses_pytest(root: Path) -> bool:
+    for name in ("pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", "requirements.txt", "requirements-dev.txt"):
+        path = root / name
+        try:
+            if not path.is_file() or path.stat().st_size > MAX_TEST_BYTES:
+                continue
+            content = path.read_text(encoding="utf-8-sig").lower()
+        except (OSError, UnicodeError):
+            continue
+        if "pytest" in content or "[tool.pytest" in content or "[tool:pytest]" in content:
+            return True
+    return False
+
 def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allows=None) -> dict:
     root = Path(workspace).expanduser().resolve()
     if not root.is_dir():
@@ -108,6 +122,7 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
         }
 
     tests = _discover_tests(root)
+    runner = "pytest" if _uses_pytest(root) else "unittest"
     scores: dict[str, dict] = {}
     broad_reasons = []
     for rel in changed:
@@ -164,10 +179,12 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
     for row in selected:
         test_path = Path(row["path"])
         commands.append({
-            "task_id": "focused-unittest-" + re.sub(r"[^a-z0-9_-]+", "-", test_path.as_posix().lower()).strip("-"),
-            "label": "Focused unittest: " + row["path"],
-            "command": [sys.executable, "-m", "unittest", "discover",
-                        "-s", test_path.parent.as_posix(), "-p", test_path.name, "-v"],
+            "task_id": "focused-" + runner + "-" + re.sub(r"[^a-z0-9_-]+", "-", test_path.as_posix().lower()).strip("-"),
+            "label": "Focused " + runner + ": " + row["path"],
+            "command": ([sys.executable, "-m", "pytest", "-q", test_path.as_posix()]
+                        if runner == "pytest" else
+                        [sys.executable, "-m", "unittest", "discover",
+                         "-s", test_path.parent.as_posix(), "-p", test_path.name, "-v"]),
             "cwd": ".",
             "path": row["path"],
             "reason": "Run this likely-related test file only. " + "; ".join(row["reasons"]),
@@ -179,10 +196,11 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
         "selected_tests": selected,
         "commands": commands,
         "full_suite_recommended": full_suite,
-        "full_suite_command": [sys.executable, "-m", "unittest", "discover", "-v"] if full_suite and tests else None,
-        "full_suite_task_id": "python-unittest" if full_suite and tests else None,
+        "full_suite_command": ([sys.executable, "-m", "pytest", "-q"] if runner == "pytest" else [sys.executable, "-m", "unittest", "discover", "-v"]) if full_suite and tests else None,
+        "full_suite_task_id": "python-pytest" if runner == "pytest" and full_suite and tests else ("python-unittest" if full_suite and tests else None),
         "full_suite_reason": reason if full_suite else "",
         "discovered_test_count": len(tests),
         "selection_limit": MAX_SELECTED,
+        "runner": runner,
         "message": "Selection is heuristic and read-only. Review commands and explicitly approve each command before execution.",
     }
