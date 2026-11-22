@@ -282,3 +282,8 @@ The Explorer overlays three small status indicators on the existing file/folder 
 Commit identity is collected per repository when first needed. Every **Push** action requires a separate publish confirmation. For GitHub remotes, every push first presents an authentication choice: sign in through GitHub CLI (`gh`) or continue with already configured Git Credential Manager/SSH credentials, followed by a separate publish confirmation. GitHub CLI is optional; Git and GitHub CLI are not bundled. Other remotes use the user's configured Git Credential Manager or SSH credentials. Fetch, pull, push, remote management, branch operations, clone and repository initialization are available in the `⋯` menu.
 
 Discard actions require a confirmation because they remove uncommitted work. Remote pushes are never triggered just by opening a repository or committing locally.
+
+
+## Automated debugging & root-cause triage
+
+The AI agent has read-only debugging helpers: `debug_analyze_error` parses pasted compiler/runtime diagnostics and maps safe workspace file/line references to bounded source excerpts; `debug_parse_stack_trace` extracts stack frames; and `debug_source_context` reads a small excerpt around a line. These tools do not execute code or change files. Analysis is heuristic: error text and excerpts are evidence, not a verified root-cause determination. Suggested tests/build commands are discovered separately and require explicit approval before execution.
