@@ -197,6 +197,7 @@ The agent exposes `detect_project_tasks` in both Ask and Agent modes. It inspect
 ### Visible task planning
 
 For multi-step work, the agent can create a bounded plan (up to eight steps) linked to discovered validation tasks. The plan appears in the AI panel's **Task Plan** tab with its goal, ordered steps, and execution policy. Plans are workspace-scoped and reset when the active workspace changes. Creating a plan is non-destructive; each proposed command remains a separate approval decision. The agent is instructed to inspect actual command output and report a passing check only when the approved process exits successfully.
+Validation proposals may reference a plan task ID. After the user approves that command, the IDE records its actual exit code and updates the matching plan step to passed or failed; an unapproved proposal never counts as a completed check.
 
 The normal Agent workflow remains approval-gated: file changes and test/build commands are proposals; commands run only after the user approves them. The agent must report actual test output rather than treating a proposed command as a successful test.
 
