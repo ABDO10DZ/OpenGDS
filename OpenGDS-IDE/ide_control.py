@@ -111,7 +111,7 @@ class IDEControlBridge(QObject):
             if problems is None:
                 return {"workspace": root.name, "diagnostics": [], "count": 0}
             rows = []
-            blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot", ".opengds", ".opengds-ide"}
+            blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot", ".opengds", ".opengds-ide", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache"}
             blocked_names = {"secrets.json", "credentials.json", "credentials.db", "token.json", "auth.json",
                              ".npmrc", ".pypirc", ".netrc", ".git-credentials", "service-account.json"}
             blocked_suffixes = {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
@@ -188,7 +188,7 @@ class IDEControlBridge(QObject):
 
             stack = []
             stack_view = getattr(window, "call_stack_view", None)
-            if stack_view is not None:
+            if connected and paused and stack_view is not None:
                 for index in range(min(int(stack_view.count()), 50)):
                     item = stack_view.item(index)
                     location = safe_location(item.data(Qt.ItemDataRole.UserRole))
