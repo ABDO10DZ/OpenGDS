@@ -182,6 +182,16 @@ The built-in AI agent can use the IDE itself through a small allow-listed Qt bri
 
 These UI actions run on the Qt GUI thread. They are navigation/view operations only; file writes and command execution continue through the existing proposal-and-approval workflow.
 
+### Git-aware development
+
+The built-in AI agent now has two additional read-only Git tools:
+- `git_status` reports the repository branch and changed workspace paths, omitting common credential files and secret directories.
+- `git_diff` reads a bounded diff for one workspace-relative file against `HEAD`.
+
+The agent can inspect existing user changes before proposing edits, then re-check the diff after the user approves changes. These tools do not stage, commit, reset, checkout, or push anything. Git operations are invoked with fixed argument arrays (no shell) and require the active workspace to be the repository root.
+
+The normal Agent workflow remains approval-gated: file changes and test/build commands are proposals; commands run only after the user approves them. The agent must report actual test output rather than treating a proposed command as a successful test.
+
 ### OpenGDS MCP server
 
 OpenGDS-IDE also includes an optional Model Context Protocol (MCP) server for external MCP-compatible clients. Install it separately:
