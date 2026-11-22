@@ -32,7 +32,7 @@ def discover_project_tasks(workspace: str | Path, *, safe_path=None) -> list[dic
         tasks.append({
             "id": "python-unittest",
             "label": "Python unit tests",
-            "command": [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+            "command": [sys.executable, "-m", "unittest", "discover", "-v"],
             "cwd": ".",
             "reason": "Run the project's Python unittest discovery suite",
             "source": "Python test configuration or tests directory",
@@ -75,32 +75,14 @@ def discover_project_tasks(workspace: str | Path, *, safe_path=None) -> list[dic
         })
 
     if exists("CMakeLists.txt"):
-        if exists("build/CMakeCache.txt"):
-            tasks.append({
-                "id": "cmake-build",
-                "label": "CMake build",
-                "command": ["cmake", "--build", "build"],
-                "cwd": ".",
-                "reason": "Build the configured CMake project",
-                "source": "CMakeLists.txt and build/CMakeCache.txt",
-            })
-            tasks.append({
-                "id": "cmake-test",
-                "label": "CTest suite",
-                "command": ["ctest", "--test-dir", "build", "--output-on-failure"],
-                "cwd": ".",
-                "reason": "Run tests registered with CTest",
-                "source": "Configured CMake build directory",
-            })
-        else:
-            tasks.append({
-                "id": "cmake-configure",
-                "label": "CMake configure",
-                "command": ["cmake", "-S", ".", "-B", "build"],
-                "cwd": ".",
-                "reason": "Configure the CMake project in the build directory",
-                "source": "CMakeLists.txt",
-            })
+        tasks.append({
+            "id": "cmake-configure",
+            "label": "CMake configure",
+            "command": ["cmake", "-S", ".", "-B", "build"],
+            "cwd": ".",
+            "reason": "Configure the CMake project in the build directory",
+            "source": "CMakeLists.txt",
+        })
 
     if exists("project.godot"):
         tasks.append({
