@@ -103,6 +103,49 @@ class IDEControlBridge(QObject):
                 "column": cursor.positionInBlock() + 1 if cursor else None,
                 "open_files": opened[:100],
             }
+        if name == "ide_get_diagnostics":
+            root = self._workspace()
+            problems = getattr(window, "problems", None)
+            if problems is None:
+                return {"workspace": root.name, "diagnostics": [], "count": 0}
+            rows = []
+            blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot", ".opengds", ".opengds-ide"}
+            blocked_names = {"secrets.json", "credentials.json", "credentials.db", "token.json", "auth.json",
+                             ".npmrc", ".pypirc", ".netrc", ".git-credentials", "service-account.json"}
+            blocked_suffixes = {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
+            for index in range(min(int(problems.count()), 100)):
+                item = problems.item(index)
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(data, (tuple, list)) or len(data) < 2:
+                    continue
+                raw_path, raw_line = data[0], data[1]
+                raw_column = data[2] if len(data) > 2 else 0
+                try:
+                    candidate = Path(str(raw_path)).expanduser().resolve(strict=False)
+                    relative = candidate.relative_to(root).as_posix()
+                    parts = [part.lower() for part in Path(relative).parts]
+                    if any(part in blocked_dirs or part.startswith(".env") or part in blocked_names
+                           or Path(part).suffix.lower() in blocked_suffixes for part in parts):
+                        continue
+                    current = root
+                    for part in Path(relative).parts:
+                        current = current / part
+                        if current.is_symlink():
+                            raise PermissionError("Symlink diagnostic path")
+                    if not candidate.is_file():
+                        continue
+                    line = max(1, int(raw_line))
+                    column = max(0, int(raw_column or 0))
+                except (OSError, ValueError, TypeError):
+                    continue
+                message = str(item.text() or "")[:1000]
+                message = re.sub(r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\\s*[:=]\\s*[^\\s,;]+",
+                                 r"\\1=[REDACTED]", message)
+                message = re.sub(r"(?i)bearer\\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", message)
+                rows.append({"path": relative, "line": line, "column": column, "message": message})
+            return {"workspace": root.name, "diagnostics": rows, "count": len(rows),
+                    "truncated": int(problems.count()) > 100,
+                    "source": "IDE Problems panel; structured diagnostics only, not raw logs"}
         if name == "ide_open_file":
             path = self._relative_file(args.get("path", ""))
             window.open_path(path)
