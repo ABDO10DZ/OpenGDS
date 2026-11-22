@@ -199,7 +199,7 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
         "selected_tests": selected,
         "commands": commands,
         "full_suite_recommended": full_suite,
-        "full_suite_command": ([sys.executable, "-m", "pytest", "-q"] if runner == "pytest" else [sys.executable, "-m", "unittest", "discover", "-v"]) if full_suite and tests else None,
+        "full_suite_command": ([sys.executable, "-m", "pytest", "-q"] if runner == "pytest" else [sys.executable, "-m", "unittest", "discover", *(["-s", "tests"] if (root / "tests").is_dir() else []), "-v"]) if full_suite and tests else None,
         "full_suite_task_id": "python-pytest" if runner == "pytest" and full_suite and tests else ("python-unittest" if full_suite and tests else None),
         "full_suite_reason": reason if full_suite else "",
         "discovered_test_count": len(tests),
