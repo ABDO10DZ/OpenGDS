@@ -176,7 +176,7 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
             names = [item["function"]["name"] for item in engine.available_tools()]
-            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files"])
+            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact"])
             self.assertNotIn("propose_change", names)
             self.assertNotIn("propose_command", names)
 
