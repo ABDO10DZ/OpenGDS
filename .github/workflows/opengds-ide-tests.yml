@@ -39,6 +39,10 @@ jobs:
           cache-dependency-path: OpenGDS-IDE/requirements.txt
       - name: Install desktop dependencies
         run: python -m pip install -r requirements.txt
+      - name: Smoke-test desktop GUI imports
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -c "import main; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('OpenGDS-IDE GUI import and Qt initialization OK')"
       - name: Install optional MCP SDK
         run: python -m pip install -r requirements-mcp.txt
       - name: Run unit tests
