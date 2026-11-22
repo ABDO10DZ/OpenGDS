@@ -293,10 +293,15 @@ class CredentialStore:
             self._keyring().set_password(self.SERVICE_NAME, str(provider), legacy_key)
             path.unlink(missing_ok=True)
             return legacy_key
-        keyring = self._keyring()
-        stored = keyring.get_password(self.SERVICE_NAME, str(provider))
-        if stored:
-            return stored
+        try:
+            keyring = self._keyring()
+            stored = keyring.get_password(self.SERVICE_NAME, str(provider))
+            if stored:
+                return stored
+        except RuntimeError:
+            # A missing/unavailable OS keyring must not prevent the IDE from
+            # starting; the environment fallback remains session-only.
+            pass
         # Environment fallback is intentionally session-scoped and is never persisted.
         return os.environ.get("OPENGDS_AI_API_KEY", "")
 
