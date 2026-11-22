@@ -38,7 +38,8 @@ def _safe_relative(value: str) -> str:
     if not raw or "\x00" in raw:
         raise ValueError("Changed paths must be non-empty workspace-relative paths.")
     path = Path(raw)
-    if path.is_absolute() or any(part in {"..", ""} for part in path.parts):
+    windows_path = PureWindowsPath(raw)
+    if path.is_absolute() or windows_path.is_absolute() or windows_path.drive or any(part in {"..", ""} for part in path.parts):
         raise ValueError("Changed paths must stay inside the workspace.")
     parts = [part.lower() for part in path.parts]
     if any(part in EXCLUDED_DIRS or part.startswith(".env") or part in SECRET_NAMES
