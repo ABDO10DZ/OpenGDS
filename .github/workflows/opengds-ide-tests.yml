@@ -8,10 +8,13 @@ on:
   push:
     branches:
       - main
-      - feature/cross-platform-credentials
     paths:
       - "OpenGDS-IDE/**"
       - ".github/workflows/opengds-ide-tests.yml"
+
+concurrency:
+  group: opengds-ide-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   unit-tests:
