@@ -22,6 +22,18 @@ class ProjectTaskDiscoveryTests(unittest.TestCase):
             self.assertEqual(by_id["python-unittest"]["command"],
                              [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
 
+
+    def test_detects_pytest_from_development_requirements(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "requirements-dev.txt").write_text("pytest>=8\n", encoding="utf-8")
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_sample.py").write_text("def test_sample(): pass\n", encoding="utf-8")
+            tasks = {task["id"] for task in discover_project_tasks(root)}
+            self.assertIn("python-unittest", tasks)
+            self.assertIn("python-pytest", tasks)
+
     def test_detects_node_test_script_but_never_copies_or_executes_script_body(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
