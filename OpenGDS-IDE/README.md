@@ -172,6 +172,46 @@ The included tests cover compiler/decompiler round trips, info reports, core err
 - Godot integration depends on the installed engine version and export templates/presets. A configured executable does not guarantee a target export template exists.
 - No local runtime smoke test was possible in the packaging environment.
 
+## AI tools, OpenGDS Core and MCP
+
+The built-in AI agent can use the IDE itself through a small allow-listed Qt bridge:
+- Read the active workspace, active editor, cursor position and open tabs.
+- Open an existing workspace-relative file.
+- Navigate the active editor to a line and column.
+- Show Explorer, Source Control, Code Insight, AI Assistant or Output panels.
+
+These UI actions run on the Qt GUI thread. They are navigation/view operations only; file writes and command execution continue through the existing proposal-and-approval workflow.
+
+### OpenGDS MCP server
+
+OpenGDS-IDE also includes an optional Model Context Protocol (MCP) server for external MCP-compatible clients. Install it separately:
+
+```bash
+python -m pip install -r requirements-mcp.txt
+python mcp_server.py --workspace /absolute/path/to/project
+```
+
+An MCP client can launch that command over stdio. Example client configuration:
+
+```json
+{
+  "mcpServers": {
+    "opengds": {
+      "command": "python",
+      "args": [
+        "/absolute/path/OpenGDS-IDE/mcp_server.py",
+        "--workspace",
+        "/absolute/path/to/project"
+      ]
+    }
+  }
+}
+```
+
+The MCP server exposes `list_project_files`, `read_project_file`, `search_project_text`, `inspect_gdsc`, `decompile_preview`, and `compile_check`. It calls the same `OpenGDSBackend` adapter used by the desktop IDE. Decompile returns an in-memory preview; compile validation writes only to a temporary directory and returns the artifact hash. Neither operation changes workspace files.
+
+MCP intentionally does not expose arbitrary shell execution, arbitrary Python scripts, direct workspace writes, or destructive GUI actions. The built-in IDE agent has richer compile/decompile proposal tools and asks the user to approve resulting changes. The MCP server is a separate stdio process and currently controls OpenGDS Core/project files, not the live GUI; live GUI navigation is available to the built-in assistant through the Qt bridge.
+
 ## AI assistant
 
 The AI assistant is a detachable, closable native dock with explicit Ask/Agent modes and three focus scopes: **GDScript & Godot** (default), **OpenGDS core**, and **General coding**. The selected focus constrains the files the agent can list, read, search, and propose edits for; an active editor buffer outside the selected focus is excluded.
