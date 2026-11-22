@@ -6,6 +6,7 @@ the agent must queue them through its existing approval workflow before executio
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ def discover_project_tasks(workspace: str | Path, *, safe_path=None) -> list[dic
         tasks.append({
             "id": "python-unittest",
             "label": "Python unit tests",
-            "command": ["python", "-m", "unittest", "discover", "-s", "tests", "-v"],
+            "command": [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
             "cwd": ".",
             "reason": "Run the project's Python unittest discovery suite",
             "source": "Python test configuration or tests directory",
@@ -40,7 +41,7 @@ def discover_project_tasks(workspace: str | Path, *, safe_path=None) -> list[dic
             tasks.append({
                 "id": "python-pytest",
                 "label": "Python pytest",
-                "command": ["python", "-m", "pytest", "-q"],
+                "command": [sys.executable, "-m", "pytest", "-q"],
                 "cwd": ".",
                 "reason": "Run pytest for this Python project",
                 "source": "pytest configuration or pyproject.toml",
