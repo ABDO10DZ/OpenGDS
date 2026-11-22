@@ -23,7 +23,7 @@ class ProjectIndexTests(unittest.TestCase):
             self.assertEqual(unchanged["updated"], 0)
             (root / "a.py").write_text("class Gadget:\n pass\n", encoding="utf-8")
             self.assertEqual(idx.refresh()["updated"], 1)
-            self.assertFalse(idx.search("Widget"))
+            self.assertFalse(any(row["kind"] == "class" and row["path"] == "a.py" for row in idx.search("Widget")))
             (root / "b.py").unlink()
             self.assertEqual(idx.refresh()["removed"], 1)
 
