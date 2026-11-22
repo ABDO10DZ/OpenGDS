@@ -22,7 +22,7 @@ def frozen_executable() -> Path:
     return dist / APP_NAME / APP_NAME
 
 
-def run_checked(command: list[str], *, timeout: int = 90) -> subprocess.CompletedProcess:
+def run_checked(command: list[str], *, timeout: int = 90, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     try:
         result = subprocess.run(
             command,
@@ -57,6 +57,14 @@ def main() -> int:
 
     version = run_checked([str(executable), "--opengds-cli", "--version"])
     print(version.stdout[-2000:])
+
+    gui_env = os.environ.copy()
+    gui_env["QT_QPA_PLATFORM"] = "offscreen"
+    gui_env["OPENGDS_GUI_SMOKE"] = "1"
+    gui_startup = run_checked([str(executable)], timeout=90, env=gui_env)
+    print("Frozen Qt GUI startup smoke test passed.")
+    if gui_startup.stdout:
+        print(gui_startup.stdout[-2000:])
 
     with tempfile.TemporaryDirectory(prefix="opengds-frozen-smoke-") as temp:
         work = Path(temp)
