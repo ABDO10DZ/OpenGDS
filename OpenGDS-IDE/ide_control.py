@@ -20,7 +20,7 @@ def _safe_workspace_location(root: Path, raw_path: object, workspace_path: str |
     """Resolve an IDE-reported path while checking symlinks before following them."""
     root = Path(root).expanduser().resolve()
     raw = str(raw_path or "").strip()
-    if not raw or "\\x00" in raw:
+    if not raw or "\x00" in raw:
         raise ValueError("A source path is required.")
     supplied = Path(raw).expanduser()
     bases = []
