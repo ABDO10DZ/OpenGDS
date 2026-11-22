@@ -57,6 +57,28 @@ def source_context(workspace: Path, relative: str, line: int, radius: int = 4) -
     start=max(1,line-radius); end=min(len(lines),line+radius)
     return {"path":relative,"focus_line":line,"excerpt":[{"line":n,"text":lines[n-1][:500],"focus":n==line} for n in range(start,end+1)]}
 
+
+def _workspace_relative_path(root: Path, value: str) -> str | None:
+    candidate = Path(str(value)).expanduser()
+    if not candidate.is_absolute():
+        if ".." in candidate.parts:
+            return None
+        return candidate.as_posix()
+    suffix = []
+    ancestor = candidate
+    while True:
+        try:
+            if ancestor.resolve(strict=False) == root:
+                return Path(*reversed(suffix)).as_posix() if suffix else "."
+        except (OSError, RuntimeError):
+            return None
+        parent = ancestor.parent
+        if parent == ancestor:
+            break
+        suffix.append(ancestor.name)
+        ancestor = parent
+    return None
+
 def triage_error(workspace: Path, error_text: str, limit: int = 20) -> dict:
     root = Path(workspace).expanduser().resolve()
     diagnostics = parse_diagnostics(error_text, limit)
@@ -66,24 +88,18 @@ def triage_error(workspace: Path, error_text: str, limit: int = 20) -> dict:
         relative = row["path"].replace("\\", "/")
         if relative.startswith("res://"):
             relative = relative[6:]
-        candidate = Path(relative)
-        if candidate.is_absolute():
-            try:
-                relative = candidate.resolve(strict=False).relative_to(root).as_posix()
-            except ValueError:
-                continue
+        relative = _workspace_relative_path(root, relative)
+        if relative is None:
+            continue
         context = source_context(root, relative, row["line"])
         if "excerpt" in context:
             contexts.append({"diagnostic": row, "context": context})
     stack_contexts = []
     for frame in frames[:10]:
         relative = str(frame["path"]).replace("\\", "/")
-        candidate = Path(relative)
-        if candidate.is_absolute():
-            try:
-                relative = candidate.resolve(strict=False).relative_to(root).as_posix()
-            except ValueError:
-                continue
+        relative = _workspace_relative_path(root, relative)
+        if relative is None:
+            continue
         context = source_context(root, relative, frame["line"])
         if "excerpt" in context:
             stack_contexts.append({"frame": {**frame, "path": relative}, "context": context})
