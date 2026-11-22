@@ -292,3 +292,8 @@ The AI agent has read-only debugging helpers: `debug_analyze_error` parses paste
 ## Lightweight static code review
 
 AI tools `project_review_file` and `project_review_workspace` perform a bounded, read-only heuristic scan for dynamic evaluation/execution, shell-enabled subprocess calls, unsafe pickle loading, swallowed bare exceptions, and TODO/FIXME markers. Workspace scans are capped, respect Focus, and block credential/excluded paths and symlinks. Findings include severity, line and snippet; they may be false positives and are not a security certification. The tools do not execute commands or modify files.
+
+
+## Change-aware test selection
+
+The AI agent exposes `project_select_tests`. It reads the current Git change list (or accepts an explicit bounded list of workspace-relative paths), scans up to 1,000 bounded Python test files, and ranks likely matches using paired test filenames and source references. It recognizes pytest configuration and otherwise uses Python's standard unittest runner. Project-wide dependency, build, test configuration or CI workflow changes, missing mappings, and more than eight likely matches recommend the full suite rather than focused tests. Commands are suggestions only; each must pass through `propose_command` and receive explicit user approval. The selector is heuristic and currently targets Python `unittest`/pytest test files; it does not prove test coverage or infer arbitrary language-level dependencies.
