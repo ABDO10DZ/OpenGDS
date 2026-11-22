@@ -37,10 +37,13 @@ class AgentEngineTests(unittest.TestCase):
             self.assertIn("ide_go_to_line", names)
             self.assertIn("ide_focus_panel", names)
             self.assertIn("ide_get_diagnostics", names)
+            self.assertIn("ide_get_debug_state", names)
             result = with_bridge._execute_tool("ide_get_state", {})
             self.assertEqual(result["tool"], "ide_get_state")
             diagnostics = with_bridge._execute_tool("ide_get_diagnostics", {})
             self.assertEqual(diagnostics["tool"], "ide_get_diagnostics")
+            debug_state = with_bridge._execute_tool("ide_get_debug_state", {})
+            self.assertEqual(debug_state["tool"], "ide_get_debug_state")
 
     def test_openai_stream_forwards_text_and_reassembles_tool_call_fragments(self):
         import json
