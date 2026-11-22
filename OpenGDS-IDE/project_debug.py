@@ -33,13 +33,14 @@ def parse_stack_trace(text: str, limit: int = 50) -> list[dict]:
     return frames
 
 def source_context(workspace: Path, relative: str, line: int, radius: int = 4) -> dict:
-    path=(workspace/relative).resolve(strict=False)
-    if path != workspace and workspace not in path.parents:
+    root = Path(workspace).expanduser().resolve()
+    path = (root / relative).resolve(strict=False)
+    if path != root and root not in path.parents:
         return {"error":"Path outside workspace"}
     parts=[part.lower() for part in Path(relative).parts]
     if any(part in BLOCKED_DIRS or part.startswith(".env") or part in BLOCKED_NAMES or Path(part).suffix.lower() in BLOCKED_SUFFIXES for part in parts):
         return {"error":"Sensitive or excluded source paths are blocked"}
-    current=workspace
+    current=root
     for part in Path(relative).parts:
         current=current/part
         if current.is_symlink(): return {"error":"Symlink paths are blocked"}
@@ -52,6 +53,7 @@ def source_context(workspace: Path, relative: str, line: int, radius: int = 4) -
     return {"path":relative,"focus_line":line,"excerpt":[{"line":n,"text":lines[n-1][:500],"focus":n==line} for n in range(start,end+1)]}
 
 def triage_error(workspace: Path, error_text: str, limit: int = 20) -> dict:
+    root = Path(workspace).expanduser().resolve()
     diagnostics=parse_diagnostics(error_text,limit)
     frames=parse_stack_trace(error_text,limit)
     contexts=[]
@@ -61,9 +63,9 @@ def triage_error(workspace: Path, error_text: str, limit: int = 20) -> dict:
         # Only accept paths that resolve inside workspace; normalize absolute paths to workspace-relative.
         candidate=Path(rel)
         if candidate.is_absolute():
-            try: rel=candidate.resolve(strict=False).relative_to(workspace).as_posix()
+            try: rel=candidate.resolve(strict=False).relative_to(root).as_posix()
             except ValueError: continue
-        ctx=source_context(workspace,rel,row["line"])
+        ctx=source_context(root,rel,row["line"])
         if "excerpt" in ctx: contexts.append({"diagnostic":row,"context":ctx})
     return {"diagnostics":diagnostics,"stack_frames":frames,"source_contexts":contexts,
             "assessment":"Heuristic triage only. The error text and source excerpts are evidence; root-cause ranking is not a verified diagnosis."}
