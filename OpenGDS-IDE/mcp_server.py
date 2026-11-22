@@ -29,6 +29,9 @@ SENSITIVE_NAMES = {
 }
 SENSITIVE_SUFFIXES = {".pem", ".key", ".pfx", ".p12", ".keystore", ".cer", ".crt"}
 MAX_READ_BYTES = 200_000
+MAX_WALK_ENTRIES = 20_000
+MAX_GDSC_BYTES = 128 * 1024 * 1024
+MAX_GDSCRIPT_BYTES = 5 * 1024 * 1024
 
 
 class OpenGDSMCPService:
@@ -63,22 +66,37 @@ class OpenGDSMCPService:
     def list_files(self, limit: int = 200) -> list[str]:
         limit = max(1, min(int(limit), 500))
         rows = []
-        for path in self.workspace.rglob("*"):
-            try:
+        scanned = 0
+        for current, dirs, files in os.walk(self.workspace, followlinks=False):
+            base = Path(current)
+            dirs[:] = [
+                name for name in sorted(dirs, key=str.casefold)
+                if name.lower() not in EXCLUDED_DIRS
+                and not name.lower().startswith(".env")
+                and not (base / name).is_symlink()
+            ]
+            for name in sorted(files, key=str.casefold):
+                scanned += 1
+                if scanned > MAX_WALK_ENTRIES:
+                    return sorted(rows)[:limit]
+                path = base / name
+                if path.is_symlink():
+                    continue
                 relative = path.relative_to(self.workspace)
-                if not path.is_file() or path.is_symlink():
+                lowered = [part.lower() for part in relative.parts]
+                if any(part in EXCLUDED_DIRS or part.startswith(".env")
+                       or part in SENSITIVE_NAMES or Path(part).suffix.lower() in SENSITIVE_SUFFIXES
+                       for part in lowered):
                     continue
-                if any(part.lower() in EXCLUDED_DIRS or part.lower().startswith(".env")
-                       or part.lower() in SENSITIVE_NAMES or Path(part).suffix.lower() in SENSITIVE_SUFFIXES
-                       for part in relative.parts):
-                    continue
-                if path.stat().st_size > MAX_READ_BYTES:
+                try:
+                    if path.stat().st_size > MAX_READ_BYTES:
+                        continue
+                except OSError:
                     continue
                 rows.append(relative.as_posix())
-            except OSError:
-                continue
-        return sorted(rows)[:limit]
-
+                if len(rows) >= limit:
+                    return sorted(rows)
+        return sorted(rows)
     def read_file(self, path: str) -> dict:
         target = self.safe_path(path)
         if not target.is_file():
@@ -113,6 +131,8 @@ class OpenGDSMCPService:
         target = self.safe_path(path)
         if not target.is_file() or target.suffix.lower() != ".gdc":
             raise ValueError("OpenGDS inspection requires a workspace .gdc file.")
+        if target.stat().st_size > MAX_GDSC_BYTES:
+            raise ValueError("GDSC input exceeds the 128 MB inspection limit.")
         mode = str(mode).lower()
         if mode not in {"info", "audit", "consts", "disasm", "hexdump", "dbg"}:
             raise ValueError("Unsupported read-only OpenGDS inspection mode.")
@@ -123,6 +143,8 @@ class OpenGDSMCPService:
         target = self.safe_path(path)
         if not target.is_file() or target.suffix.lower() != ".gdc":
             raise ValueError("OpenGDS decompile preview requires a workspace .gdc file.")
+        if target.stat().st_size > MAX_GDSC_BYTES:
+            raise ValueError("GDSC input exceeds the 128 MB decompile limit.")
         source = self.backend.decompile(target)
         if len(source.encode("utf-8")) > 1_000_000:
             raise ValueError("Decompiled source exceeds the 1 MB preview limit.")
@@ -133,6 +155,8 @@ class OpenGDSMCPService:
         source = self.safe_path(path)
         if not source.is_file() or source.suffix.lower() != ".gd":
             raise ValueError("Compile validation requires a workspace .gd file.")
+        if source.stat().st_size > MAX_GDSCRIPT_BYTES:
+            raise ValueError("GDScript input exceeds the 5 MB compile-validation limit.")
         tab_size = max(1, min(int(tab_size), 16))
         with tempfile.TemporaryDirectory(prefix="opengds-mcp-") as temp:
             output = Path(temp) / (source.stem + ".gdc")
