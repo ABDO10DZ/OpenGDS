@@ -60,7 +60,7 @@ jobs:
       - name: Build and smoke-test Windows installer script
         if: runner.os == 'Windows'
         shell: cmd
-        run: build_gui.bat
+        run: call build_gui.bat
       - name: Validate Unix packaging script syntax
         if: runner.os != 'Windows'
         run: bash -n build_gui.sh
