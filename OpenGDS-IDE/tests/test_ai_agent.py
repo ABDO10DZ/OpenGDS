@@ -176,7 +176,7 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
             names = [item["function"]["name"] for item in engine.available_tools()]
-            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact", "debug_analyze_error", "debug_parse_stack_trace", "debug_source_context", "project_review_file", "project_review_workspace"])
+            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact", "debug_analyze_error", "debug_parse_stack_trace", "debug_source_context", "project_review_file", "project_review_workspace", "project_select_tests"])
             self.assertNotIn("propose_change", names)
             self.assertNotIn("propose_command", names)
 
@@ -603,6 +603,28 @@ if __name__ == "__main__":
             self.assertEqual(frames["frames"][0]["line"], 7)
             excerpt = engine._execute_tool("debug_source_context", {"path": "player.gd", "line": 2})
             self.assertTrue(any(row["focus"] for row in excerpt["excerpt"]))
+
+    def test_project_select_tests_reads_git_status_and_never_executes_commands(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "ai_agent.py"
+            source.write_text("def run(): pass\\n", encoding="utf-8")
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_ai_agent.py").write_text("from ai_agent import run\\n", encoding="utf-8")
+            subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "tests@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "OpenGDS Tests"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "baseline"], check=True, capture_output=True)
+            source.write_text("def run(): return 1\\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask", scope="all"))
+            result = engine._execute_tool("project_select_tests", {})
+            self.assertEqual([row["path"] for row in result["selected_tests"]], ["tests/test_ai_agent.py"])
+            self.assertTrue(result["commands"][0]["approval_required"])
+            self.assertFalse(result["full_suite_recommended"])
+            self.assertEqual(source.read_text(encoding="utf-8"), "def run(): return 1\\n")
 
     def test_project_review_tools_available_and_restrict_paths(self):
         with tempfile.TemporaryDirectory() as td:
