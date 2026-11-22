@@ -29,6 +29,7 @@ from ai_providers import get_provider_adapter
 from ai_models import describe_model
 from project_tasks import discover_project_tasks
 from task_planner import build_task_plan
+from project_index import ProjectIndex
 
 
 PROVIDERS = {
@@ -331,12 +332,20 @@ TASK_PLAN_TOOLS = [
 ]
 
 
+
+PROJECT_INDEX_TOOLS = [
+    {"type": "function", "function": {"name": "project_index_refresh", "description": "Refresh the local persistent project symbol index. Stores symbol names and file metadata only, never source text; excludes secret files.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_index_status", "description": "Show the current project's local symbol-index size and cache location.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_symbol_search", "description": "Find declarations and references by symbol name across the indexed workspace.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["query"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_related_files", "description": "Find files that share declared symbols with a workspace-relative source file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["path"], "additionalProperties": False}}},
+]
+
 PROJECT_TASK_TOOLS = [
     {"type": "function", "function": {"name": "detect_project_tasks", "description": "Detect known project test/build tasks by inspecting safe manifests. This never executes commands; returned commands still require explicit approval.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
 ]
 
 
-READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS
+READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS
 
 OPENGDS_READ_TOOLS = [
     {"type": "function", "function": {"name": "opengds_inspect", "description": "Use the bundled OpenGDS core API to inspect a GDSC file. Supports info, audit, consts, disasm, hexdump and static dbg modes. Read-only.", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["info", "audit", "consts", "disasm", "hexdump", "dbg"]}, "path": {"type": "string"}}, "required": ["mode", "path"], "additionalProperties": False}}},
@@ -386,6 +395,7 @@ class AgentEngine:
         self._request_cancel_event: threading.Event | None = None
         self._active_response = None
         self._embedding_cache: dict[tuple[str, ...], list[float]] = {}
+        self._project_index: ProjectIndex | None = None
 
     def cancel(self) -> None:
         """Cancel the active request and close its current streaming response."""
@@ -684,6 +694,22 @@ class AgentEngine:
                 tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
                 return {"tasks": tasks, "count": len(tasks),
                         "message": "Discovery only: no command was executed. Select a task and submit its command through propose_command for explicit approval."}
+            if name.startswith("project_index_") or name in {"project_symbol_search", "project_related_files"}:
+                if self._project_index is None:
+                    self._project_index = ProjectIndex(self.workspace, safe_path=self._safe_path,
+                        scope_allows=self._scope_allows)
+                if name == "project_index_refresh":
+                    return self._project_index.refresh()
+                if name == "project_index_status":
+                    return self._project_index.status()
+                if name == "project_symbol_search":
+                    return {"results": self._project_index.search(args.get("query", ""), args.get("limit", 40))}
+                if name == "project_related_files":
+                    path = self._safe_path(str(args.get("path", "")))
+                    relative = path.relative_to(self.workspace).as_posix()
+                    if not self._scope_allows(relative):
+                        raise PermissionError("File is outside the current assistant focus.")
+                    return {"path": relative, "related": self._project_index.related_files(relative, args.get("limit", 20))}
             if name == "git_status":
                 root_result = subprocess.run(
                     ["git", "-C", str(self.workspace), "rev-parse", "--show-toplevel"],
@@ -1065,7 +1091,7 @@ class AgentEngine:
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
             return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
