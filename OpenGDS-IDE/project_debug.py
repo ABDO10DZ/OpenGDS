@@ -7,7 +7,7 @@ BLOCKED_DIRS = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", "node_mo
 BLOCKED_NAMES = {"secrets.json", "credentials.json", "token.json", "auth.json", ".npmrc", ".netrc", ".git-credentials", "service-account.json"}
 BLOCKED_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
 
-_ERROR = re.compile(r"(?P<path>(?:res://)?(?:[A-Za-z]:[\\/]|/)?[^:\n]+\.(?:gd|py|js|ts|cs|cpp|c|rs|go|java|kt|gdc)):(?P<line>\d+)(?::(?P<column>\d+))?:\s*(?P<message>.+)", re.I)
+_ERROR = re.compile(r"(?P<path>(?:res://)?(?:[A-Za-z]:[\\/]|/)?[^:\n]+\.(?:gd|py|js|ts|cs|cpp|c|rs|go|java|kt|gdc)):(?P<line>\d+)(?::(?P<column>\d+))?(?:\s*-\s*|:\s*)(?P<message>.+)", re.I)
 _TRACE = re.compile(r"(?:File \"(?P<pyfile>[^\"]+)\", line (?P<pyline>\d+)|(?P<path>(?:res://)?[^:\n]+\.(?:gd|py|cs|cpp|js|ts|java|rs|go|kt)):(?P<line>\d+))", re.I)
 
 def parse_diagnostics(text: str, limit: int = 100) -> list[dict]:
@@ -27,6 +27,8 @@ def parse_stack_trace(text: str, limit: int = 50) -> list[dict]:
         m=_TRACE.search(line)
         if not m: continue
         path=m.group("pyfile") or m.group("path")
+        if path.startswith("res://"):
+            path = path[6:]
         number=m.group("pyline") or m.group("line")
         frames.append({"path":path,"line":int(number),"raw":line.strip()[:1000]})
         if len(frames)>=max(1,min(int(limit),50)): break
@@ -54,18 +56,38 @@ def source_context(workspace: Path, relative: str, line: int, radius: int = 4) -
 
 def triage_error(workspace: Path, error_text: str, limit: int = 20) -> dict:
     root = Path(workspace).expanduser().resolve()
-    diagnostics=parse_diagnostics(error_text,limit)
-    frames=parse_stack_trace(error_text,limit)
-    contexts=[]
+    diagnostics = parse_diagnostics(error_text, limit)
+    frames = parse_stack_trace(error_text, limit)
+    contexts = []
     for row in diagnostics[:10]:
-        rel=row["path"].replace("\\","/")
-        if rel.startswith("res://"): rel=rel[6:]
-        # Only accept paths that resolve inside workspace; normalize absolute paths to workspace-relative.
-        candidate=Path(rel)
+        relative = row["path"].replace("\\", "/")
+        if relative.startswith("res://"):
+            relative = relative[6:]
+        candidate = Path(relative)
         if candidate.is_absolute():
-            try: rel=candidate.resolve(strict=False).relative_to(root).as_posix()
-            except ValueError: continue
-        ctx=source_context(root,rel,row["line"])
-        if "excerpt" in ctx: contexts.append({"diagnostic":row,"context":ctx})
-    return {"diagnostics":diagnostics,"stack_frames":frames,"source_contexts":contexts,
-            "assessment":"Heuristic triage only. The error text and source excerpts are evidence; root-cause ranking is not a verified diagnosis."}
+            try:
+                relative = candidate.resolve(strict=False).relative_to(root).as_posix()
+            except ValueError:
+                continue
+        context = source_context(root, relative, row["line"])
+        if "excerpt" in context:
+            contexts.append({"diagnostic": row, "context": context})
+    stack_contexts = []
+    for frame in frames[:10]:
+        relative = str(frame["path"]).replace("\\", "/")
+        candidate = Path(relative)
+        if candidate.is_absolute():
+            try:
+                relative = candidate.resolve(strict=False).relative_to(root).as_posix()
+            except ValueError:
+                continue
+        context = source_context(root, relative, frame["line"])
+        if "excerpt" in context:
+            stack_contexts.append({"frame": {**frame, "path": relative}, "context": context})
+    return {
+        "diagnostics": diagnostics,
+        "stack_frames": frames,
+        "source_contexts": contexts,
+        "stack_contexts": stack_contexts,
+        "assessment": "Heuristic triage only. Error text and source excerpts are evidence, not a verified root-cause determination.",
+    }
