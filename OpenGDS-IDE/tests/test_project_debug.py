@@ -35,6 +35,24 @@ class ProjectDebugTests(unittest.TestCase):
             self.assertEqual(result["stack_frames"][0]["path"], "player.gd")
             self.assertEqual(result["stack_contexts"][0]["context"]["focus_line"], 2)
 
+
+    def test_triage_rejects_absolute_in_workspace_symlink_aliases(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "target.py"
+            alias = root / "alias.py"
+            target.write_text("secret_source = True\n", encoding="utf-8")
+            try:
+                alias.symlink_to(target)
+            except OSError:
+                self.skipTest("Symlinks are unavailable")
+            error = f"{alias}:1:1: SyntaxError: invalid token\n  File \"{alias}\", line 1, in run"
+            result = triage_error(root, error)
+            self.assertEqual(len(result["diagnostics"]), 1)
+            self.assertEqual(len(result["stack_frames"]), 1)
+            self.assertEqual(result["source_contexts"], [])
+            self.assertEqual(result["stack_contexts"], [])
+
     def test_context_blocks_outside_paths_and_symlinks(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as other:
             root, outside = Path(td), Path(other)
