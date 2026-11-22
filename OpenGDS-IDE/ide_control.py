@@ -77,6 +77,12 @@ class IDEControlBridge(QObject):
             root = self._workspace()
             editor = window.current_editor()
             active = getattr(editor, "file_path", None) if editor else None
+            active_relative = None
+            if active:
+                try:
+                    active_relative = Path(active).resolve().relative_to(root).as_posix()
+                except ValueError:
+                    active_relative = None
             opened = []
             for index in range(window.tabs.count()):
                 widget = window.tabs.widget(index)
@@ -89,7 +95,7 @@ class IDEControlBridge(QObject):
             cursor = editor.textCursor() if editor else None
             return {
                 "workspace": root.name,
-                "active_file": Path(active).resolve().relative_to(root).as_posix() if active else None,
+                "active_file": active_relative,
                 "line": cursor.blockNumber() + 1 if cursor else None,
                 "column": cursor.positionInBlock() + 1 if cursor else None,
                 "open_files": opened[:100],
