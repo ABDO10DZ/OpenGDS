@@ -155,7 +155,7 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
     full_suite = bool(broad_reasons or not selected or len(ordered) > MAX_SELECTED)
     reason = "; ".join(dict.fromkeys(broad_reasons))
     if not selected and not reason:
-        reason = "No reliable changed-file to test mapping was found"
+        reason = "No reliable changed-file to test mapping was found" if tests else "No eligible Python test files were discovered; inspect project tasks or add tests"
     elif len(ordered) > MAX_SELECTED:
         reason = (reason + "; " if reason else "") + "more than eight related tests were found"
 
@@ -163,7 +163,7 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
     for row in selected:
         test_path = Path(row["path"])
         commands.append({
-            "task_id": "focused-unittest-" + re.sub(r"[^a-z0-9_-]+", "-", test_path.stem.lower()).strip("-"),
+            "task_id": "focused-unittest-" + re.sub(r"[^a-z0-9_-]+", "-", test_path.as_posix().lower()).strip("-"),
             "label": "Focused unittest: " + row["path"],
             "command": [sys.executable, "-m", "unittest", "discover",
                         "-s", test_path.parent.as_posix(), "-p", test_path.name, "-v"],
@@ -178,7 +178,7 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
         "selected_tests": selected,
         "commands": commands,
         "full_suite_recommended": full_suite,
-        "full_suite_command": [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"] if full_suite else None,
+        "full_suite_command": [sys.executable, "-m", "unittest", "discover", "-v"] if full_suite and tests else None,\n        "full_suite_task_id": "python-unittest" if full_suite and tests else None,
         "full_suite_reason": reason if full_suite else "",
         "discovered_test_count": len(tests),
         "selection_limit": MAX_SELECTED,
