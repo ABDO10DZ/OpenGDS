@@ -316,7 +316,7 @@ OPENAI_TOOLS = [
     {"type": "function", "function": {"name": "read_file", "description": "Read a UTF-8 text file inside the current workspace. Credentials and secret files are blocked.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "search_text", "description": "Search text in project source files and return matching lines.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["query"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_change", "description": "Propose a workspace file write or deletion. The user must approve it before it is applied.", "parameters": {"type": "object", "properties": {"operation": {"type": "string", "enum": ["write", "delete"]}, "path": {"type": "string"}, "content": {"type": "string"}, "reason": {"type": "string"}}, "required": ["operation", "path", "reason"], "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "propose_command", "description": "Propose a command as an argument array. It is never run until the user explicitly approves it.", "parameters": {"type": "object", "properties": {"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}, "cwd": {"type": "string"}, "reason": {"type": "string"}}, "required": ["argv", "reason"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_command", "description": "Propose a command as an argument array. It is never run until the user explicitly approves it.", "parameters": {"type": "object", "properties": {"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}, "cwd": {"type": "string"}, "reason": {"type": "string"}, "task_id": {"type": "string"}}, "required": ["argv", "reason"], "additionalProperties": False}}},
 ]
 
 
@@ -873,9 +873,23 @@ class AgentEngine:
                 if cwd.exists() and not cwd.is_dir():
                     raise NotADirectoryError("Command working directory is not a folder inside the workspace.")
                 action_id = uuid.uuid4().hex[:10]
-                proposal = PendingAction(action_id, "command", operation="run", reason=str(args.get("reason", "Agent-proposed command"))[:1000], argv=list(argv), cwd=str(cwd))
+                task_id = str(args.get("task_id", "") or "").strip()
+                if task_id:
+                    known_task_ids = {task["id"] for task in discover_project_tasks(self.workspace, safe_path=self._safe_path)}
+                    if task_id not in known_task_ids:
+                        raise ValueError(f"Unknown project validation task id: {task_id}")
+                    if not self.task_plan or not any(step.get("task_id") == task_id for step in self.task_plan.get("steps", [])):
+                        raise ValueError("The task id must be linked to a step in the current task plan.")
+                proposal = PendingAction(action_id, "command", operation="run",
+                    reason=str(args.get("reason", "Agent-proposed command"))[:1000],
+                    argv=list(argv), cwd=str(cwd), metadata={"task_id": task_id})
                 with self._lock:
                     self.pending[action_id] = proposal
+                    if task_id and self.task_plan:
+                        for step in self.task_plan["steps"]:
+                            if step.get("task_id") == task_id and step.get("status") == "planned":
+                                step["status"] = "awaiting_approval"
+                                break
                 relative_cwd = cwd.relative_to(self.workspace).as_posix() or "."
                 return {"queued_for_approval": True, "action_id": action_id,
                         "argv": argv, "cwd": relative_cwd,
@@ -1293,6 +1307,14 @@ class AgentEngine:
             result = subprocess.run(action.argv, cwd=str(cwd), shell=False, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                     encoding="utf-8", errors="replace", timeout=180, check=False)
+            task_id = str(action.metadata.get("task_id", "") or "")
+            if task_id and self.task_plan:
+                with self._lock:
+                    for step in self.task_plan["steps"]:
+                        if step.get("task_id") == task_id and step.get("status") == "awaiting_approval":
+                            step["status"] = "passed" if result.returncode == 0 else "failed"
+                            step["exit_code"] = result.returncode
+                            break
             message = f"Command exited with code {result.returncode}.\n{result.stdout[-20000:]}"
         elif action.kind == "file":
             path = self._safe_path(action.path, for_write=True)
