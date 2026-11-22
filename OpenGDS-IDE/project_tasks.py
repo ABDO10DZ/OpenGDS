@@ -32,7 +32,7 @@ def discover_project_tasks(workspace: str | Path, *, safe_path=None) -> list[dic
         tasks.append({
             "id": "python-unittest",
             "label": "Python unit tests",
-            "command": [sys.executable, "-m", "unittest", "discover", "-v"],
+            "command": [sys.executable, "-m", "unittest", "discover", *(["-s", "tests"] if tests_dir.is_dir() else []), "-v"],
             "cwd": ".",
             "reason": "Run the project's Python unittest discovery suite",
             "source": "Python test configuration or tests directory",
