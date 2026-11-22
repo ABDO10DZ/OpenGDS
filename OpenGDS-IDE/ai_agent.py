@@ -69,6 +69,7 @@ EXCLUDED_DIRS = {
     ".git", ".godot", ".opengds", ".opengds-ide", ".venv", "venv",
     ".build-venv", ".build-venv-cli", ".build-venv-gui", ".tox",
     "node_modules", "__pycache__", "build", "dist", ".pytest_cache",
+    ".ssh", ".aws", ".azure", ".gnupg", ".secrets",
 }
 SENSITIVE_NAMES = {
     "secrets.json", "credentials.json", "credentials.db", "token.json",
