@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from mcp_server import OpenGDSMCPService
 
@@ -57,6 +58,39 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
         self.assertFalse(result["written_to_workspace"])
         self.assertEqual(result["output_bytes"], len(b"temporary-gdsc"))
         self.assertFalse((self.root / "main.gdc").read_bytes() == b"temporary-gdsc")
+
+
+    def test_list_files_prunes_excluded_directories(self):
+        hidden = self.root / ".venv"
+        hidden.mkdir()
+        (hidden / "private.gd").write_text("secret", encoding="utf-8")
+        cache = self.root / "__pycache__"
+        cache.mkdir()
+        (cache / "module.pyc").write_bytes(b"bytecode")
+        listed = self.service.list_files()
+        self.assertIn("main.gd", listed)
+        self.assertNotIn(".venv/private.gd", listed)
+        self.assertNotIn("__pycache__/module.pyc", listed)
+
+    def test_safe_path_rejects_in_workspace_symlink(self):
+        target = self.root / "main.gd"
+        alias = self.root / "alias.gd"
+        try:
+            alias.symlink_to(target)
+        except OSError:
+            self.skipTest("Symlinks are unavailable")
+        with self.assertRaises(PermissionError):
+            self.service.safe_path("alias.gd")
+
+    def test_compile_and_gdsc_size_limits_are_enforced(self):
+        with patch("mcp_server.MAX_GDSCRIPT_BYTES", 2):
+            with self.assertRaises(ValueError):
+                self.service.compile_check("main.gd")
+        with patch("mcp_server.MAX_GDSC_BYTES", 2):
+            with self.assertRaises(ValueError):
+                self.service.inspect_gdc("main.gdc")
+            with self.assertRaises(ValueError):
+                self.service.decompile_preview("main.gdc")
 
     def test_search_text(self):
         result = self.service.search_text("OpenGDS")
