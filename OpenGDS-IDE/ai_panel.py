@@ -531,6 +531,17 @@ class AIAgentDock(QWidget):
         review_hint.setWordWrap(True)
         changes_layout.addWidget(review_hint)
         self.pages.addTab(changes_page, "Changes · 0")
+
+        plan_page = QWidget()
+        plan_layout = QVBoxLayout(plan_page)
+        plan_layout.setContentsMargins(8, 8, 8, 8)
+        self.task_plan_view = QTextBrowser()
+        self.task_plan_view.setObjectName("assistantTaskPlan")
+        self.task_plan_view.setOpenExternalLinks(True)
+        self.task_plan_view.setHtml("<p>When the agent creates a task plan, it will appear here for review.</p>")
+        plan_layout.addWidget(self.task_plan_view, 1)
+        self.pages.addTab(plan_page, "Task Plan")
+
         root.addWidget(self.pages, 1)
 
         composer = QFrame()
@@ -1096,6 +1107,7 @@ class AIAgentDock(QWidget):
 
     def _worker_finished(self, answer: str):
         self._append_message("Assistant", answer)
+        self._refresh_task_plan()
         current_ids = {action.action_id for action in self.engine.pending_actions()} if self.engine else set()
         new_ids = current_ids - self._pending_before_request
         approval_language = bool(re.search(r"\b(approve|accept)\b.{0,100}\b(change|proposal|patch|edit)\b", answer, re.IGNORECASE))
@@ -1110,6 +1122,27 @@ class AIAgentDock(QWidget):
             # on a completed chat response with the review tab hidden.
             self.pages.setCurrentIndex(1)
         log_event("AI", logging.INFO, "AI assistant completed a streamed response")
+
+    def _refresh_task_plan(self):
+        plan = self.engine.task_plan if self.engine else None
+        if not plan:
+            self.task_plan_view.setHtml("<p>No task plan has been created for this workspace yet.</p>")
+            return
+        rows = [
+            f"<h3>{html.escape(plan.get('goal', 'Task plan'))}</h3>",
+            f"<p><b>Status:</b> {html.escape(plan.get('status', 'planned'))} "
+            f"· <b>Plan ID:</b> {html.escape(plan.get('id', ''))}</p>",
+            "<ol>",
+        ]
+        for step in plan.get("steps", []):
+            title = html.escape(str(step.get("title", "")))
+            description = html.escape(str(step.get("description", "")))
+            task_id = html.escape(str(step.get("task_id") or "manual step"))
+            status = html.escape(str(step.get("status", "planned")))
+            rows.append(f"<li><b>{title}</b> <span>({status})</span>"
+                        f"<br>{description}<br><i>Validation task: {task_id}</i></li>")
+        rows.extend(["</ol>", f"<p>{html.escape(plan.get('execution_policy', ''))}</p>"])
+        self.task_plan_view.setHtml("".join(rows))
 
     def _open_new_proposal_files(self):
         if not self.engine or not self.open_path:
