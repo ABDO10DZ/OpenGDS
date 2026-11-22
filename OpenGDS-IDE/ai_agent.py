@@ -30,6 +30,7 @@ from ai_models import describe_model
 from project_tasks import discover_project_tasks
 from task_planner import build_task_plan
 from project_index import ProjectIndex
+from project_analysis import architecture_summary, trace_symbol, change_impact
 
 
 PROVIDERS = {
@@ -338,6 +339,10 @@ PROJECT_INDEX_TOOLS = [
     {"type": "function", "function": {"name": "project_index_status", "description": "Show the current project's local symbol-index size and cache location.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "project_symbol_search", "description": "Find declarations and references by symbol name across the indexed workspace.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["query"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "project_related_files", "description": "Find files that share declared symbols with a workspace-relative source file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["path"], "additionalProperties": False}}},
+
+    {"type": "function", "function": {"name": "project_architecture_summary", "description": "Summarize indexed project layout and declarations (static inventory, not runtime graph). Refresh index first if needed.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_trace_symbol", "description": "Trace a symbol name to declaration/reference matches and files. Name-based; cross-language references may be incomplete.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["query"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_change_impact", "description": "Estimate likely files affected by changing a source file using shared declarations and symbol-name matches. Heuristic, not a guaranteed dependency graph.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["path"], "additionalProperties": False}}},
 ]
 
 PROJECT_TASK_TOOLS = [
@@ -710,6 +715,18 @@ class AgentEngine:
                     if not self._scope_allows(relative):
                         raise PermissionError("File is outside the current assistant focus.")
                     return {"path": relative, "related": self._project_index.related_files(relative, args.get("limit", 20))}
+                if name == "project_architecture_summary":
+                    return architecture_summary(self._project_index)
+                if name == "project_trace_symbol":
+                    return trace_symbol(self._project_index, args.get("query", ""), args.get("limit", 100))
+                if name == "project_change_impact":
+                    path = self._safe_path(str(args.get("path", "")))
+                    relative = path.relative_to(self.workspace).as_posix()
+                    if not self._scope_allows(relative):
+                        raise PermissionError("File is outside the current assistant focus.")
+                    if not path.is_file():
+                        raise FileNotFoundError(relative)
+                    return change_impact(self._project_index, relative, args.get("limit", 30))
             if name == "git_status":
                 root_result = subprocess.run(
                     ["git", "-C", str(self.workspace), "rev-parse", "--show-toplevel"],
