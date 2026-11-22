@@ -402,7 +402,7 @@ class AgentEngine:
         windows_path = PureWindowsPath(value)
         if raw.is_absolute() or windows_path.is_absolute() or windows_path.drive or any(part in {"..", ""} for part in raw.parts):
             raise ValueError("The agent can only access paths relative to the current workspace.")
-        if any(part in EXCLUDED_DIRS for part in raw.parts):
+        if any(part.lower() in EXCLUDED_DIRS for part in raw.parts):
             raise PermissionError("Access to repository metadata, caches and build output is blocked.")
         lowered_parts = [part.lower() for part in raw.parts]
         if any(part.startswith(".env") or part in SENSITIVE_NAMES or Path(part).suffix.lower() in SENSITIVE_SUFFIXES
@@ -431,7 +431,7 @@ class AgentEngine:
                 rel = path.relative_to(self.workspace)
             except ValueError:
                 continue
-            if any(part in EXCLUDED_DIRS for part in rel.parts) or path.is_symlink() or not path.is_file():
+            if any(part.lower() in EXCLUDED_DIRS for part in rel.parts) or path.is_symlink() or not path.is_file():
                 continue
             lowered_parts = [part.lower() for part in rel.parts]
             if any(part.startswith(".env") or part in SENSITIVE_NAMES or Path(part).suffix.lower() in SENSITIVE_SUFFIXES
