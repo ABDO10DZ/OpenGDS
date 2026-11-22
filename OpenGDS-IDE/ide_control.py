@@ -55,7 +55,9 @@ class IDEControlBridge(QObject):
             raise ValueError("IDE file navigation accepts workspace-relative paths only.")
         if any(part.startswith(".env") or part.lower() in {
             "secrets.json", "credentials.json", "credentials.db", "token.json",
-            "id_rsa", "id_ed25519", "authorized_keys",
+            "id_rsa", "id_ed25519", "authorized_keys", ".npmrc", ".pypirc",
+            ".netrc", ".git-credentials", "auth.json", "service-account.json",
+            "access_token", "refresh_token", ".dockerconfigjson",
         } or Path(part).suffix.lower() in {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
                for part in candidate.parts):
             raise PermissionError("Sensitive files cannot be opened through AI controls.")
