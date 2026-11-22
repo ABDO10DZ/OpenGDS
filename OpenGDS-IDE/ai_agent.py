@@ -699,7 +699,7 @@ class AgentEngine:
                 tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
                 return {"tasks": tasks, "count": len(tasks),
                         "message": "Discovery only: no command was executed. Select a task and submit its command through propose_command for explicit approval."}
-            if name.startswith("project_index_") or name in {"project_symbol_search", "project_related_files"}:
+            if name.startswith("project_index_") or name in {"project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact"}:
                 if self._project_index is None:
                     self._project_index = ProjectIndex(self.workspace, safe_path=self._safe_path,
                         scope_allows=self._scope_allows)
