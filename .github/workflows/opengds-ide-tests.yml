@@ -13,7 +13,7 @@ on:
       - ".github/workflows/opengds-ide-tests.yml"
 
 concurrency:
-  group: opengds-ide-${{ github.event.pull_request.number || github.ref }}
+  group: opengds-ide-v2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -25,6 +25,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.11"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: OpenGDS-IDE
