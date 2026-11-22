@@ -24,6 +24,9 @@ def parse_diagnostics(text: str, limit: int = 100) -> list[dict]:
 def parse_stack_trace(text: str, limit: int = 50) -> list[dict]:
     frames=[]
     for line in str(text or "").splitlines():
+        # Diagnostic lines are not stack frames even when they contain file:line text.
+        if _ERROR.search(line.strip()):
+            continue
         m=_TRACE.search(line)
         if not m: continue
         path=m.group("pyfile") or m.group("path")
