@@ -8,6 +8,23 @@ from types import SimpleNamespace
 
 class AgentEngineTests(unittest.TestCase):
 
+
+    def test_ide_controls_are_exposed_only_when_bridge_is_attached(self):
+        with tempfile.TemporaryDirectory() as td:
+            without_bridge = AgentEngine(td, AgentConfig(scope="gdscript", agent_mode="ask"))
+            self.assertNotIn("ide_get_state", [row["function"]["name"] for row in without_bridge.available_tools()])
+            class FakeIDE:
+                def call(self, name, args):
+                    return {"tool": name, "args": args}
+            with_bridge = AgentEngine(td, AgentConfig(scope="gdscript", agent_mode="ask"), ide_controller=FakeIDE())
+            names = [row["function"]["name"] for row in with_bridge.available_tools()]
+            self.assertIn("ide_get_state", names)
+            self.assertIn("ide_open_file", names)
+            self.assertIn("ide_go_to_line", names)
+            self.assertIn("ide_focus_panel", names)
+            result = with_bridge._execute_tool("ide_get_state", {})
+            self.assertEqual(result["tool"], "ide_get_state")
+
     def test_openai_stream_forwards_text_and_reassembles_tool_call_fragments(self):
         import json
         from unittest.mock import patch
