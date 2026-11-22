@@ -14,13 +14,13 @@ echo ============================================================
 
 echo.
 echo [1/7] Checking the Windows Python build environment...
-where py >nul 2>nul
+where python >nul 2>nul
 if errorlevel 1 (
-    echo ERROR: Python Launcher for Windows was not found.
-    echo Install 64-bit Python 3.12 and enable the py launcher.
+    echo ERROR: Python 3 was not found on PATH.
+    echo Install 64-bit Python 3.10 or newer.
     goto :fail
 )
-py -3.12 -c "import struct,sys; print(sys.version); print('Architecture:',struct.calcsize('P')*8); sys.exit(0 if struct.calcsize('P')*8==64 else 1)"
+python -c "import struct,sys; print(sys.version); print('Architecture:',struct.calcsize('P')*8); sys.exit(0 if sys.version_info >= (3,10) and struct.calcsize('P')*8==64 else 1)"
 if errorlevel 1 goto :fail
 
 if not exist "%ICON_FILE%" (
@@ -35,7 +35,7 @@ if not exist "LICENSE" goto :missing_source
 echo.
 echo [2/7] Creating the isolated GUI build environment...
 if not exist "%VENV_DIR%\Scripts\python.exe" (
-    py -3.12 -m venv "%VENV_DIR%"
+    python -m venv "%VENV_DIR%"
     if errorlevel 1 goto :fail
 )
 set "BUILD_PY=%CD%\%VENV_DIR%\Scripts\python.exe"
@@ -93,9 +93,9 @@ goto :fail
 :fail
 echo.
 echo BUILD FAILED. See the first error above.
-pause
+if /I not "%CI%"=="true" pause
 exit /b 1
 
 :success
-pause
+if /I not "%CI%"=="true" pause
 exit /b 0
