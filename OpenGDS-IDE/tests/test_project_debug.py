@@ -25,6 +25,8 @@ class ProjectDebugTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as other:
             root, outside = Path(td), Path(other)
             (outside / "secret.py").write_text("secret\n", encoding="utf-8")
+            (root / ".env").write_text("secret", encoding="utf-8")
+            self.assertIn("error", source_context(root, ".env", 1))
             self.assertIn("error", source_context(root, str(outside / "secret.py"), 1))
             try:
                 (root / "linked.py").symlink_to(outside / "secret.py")
