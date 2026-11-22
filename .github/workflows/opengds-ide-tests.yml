@@ -1,0 +1,44 @@
+name: OpenGDS-IDE desktop tests
+
+on:
+  pull_request:
+    paths:
+      - "OpenGDS-IDE/**"
+      - ".github/workflows/opengds-ide-tests.yml"
+  push:
+    branches:
+      - main
+      - feature/cross-platform-credentials
+    paths:
+      - "OpenGDS-IDE/**"
+      - ".github/workflows/opengds-ide-tests.yml"
+
+jobs:
+  unit-tests:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11"]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: OpenGDS-IDE
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: OpenGDS-IDE/requirements.txt
+      - name: Install desktop dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install optional MCP SDK
+        run: python -m pip install -r requirements-mcp.txt
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Verify MCP server imports
+        run: python -c "from mcp.server.fastmcp import FastMCP; from mcp_server import OpenGDSMCPService, build_server; print('MCP SDK integration import OK')"
