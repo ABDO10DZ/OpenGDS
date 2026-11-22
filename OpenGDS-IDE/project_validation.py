@@ -179,7 +179,7 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
     for row in selected:
         test_path = Path(row["path"])
         commands.append({
-            "task_id": "focused-" + runner + "-" + re.sub(r"[^a-z0-9_-]+", "-", test_path.as_posix().lower()).strip("-"),
+            "task_id": "python-pytest" if runner == "pytest" else "python-unittest",
             "label": "Focused " + runner + ": " + row["path"],
             "command": ([sys.executable, "-m", "pytest", "-q", test_path.as_posix()]
                         if runner == "pytest" else
