@@ -297,3 +297,8 @@ AI tools `project_review_file` and `project_review_workspace` perform a bounded,
 ## Change-aware test selection
 
 The AI agent exposes `project_select_tests`. It reads the current Git change list (or accepts an explicit bounded list of workspace-relative paths), scans up to 1,000 bounded Python test files, and ranks likely matches using paired test filenames and source references. It recognizes pytest configuration and otherwise uses Python's standard unittest runner. Project-wide dependency, build, test configuration or CI workflow changes, missing mappings, and more than eight likely matches recommend the full suite rather than focused tests. Commands are suggestions only; each must pass through `propose_command` and receive explicit user approval. The selector is heuristic and currently targets Python `unittest`/pytest test files; it does not prove test coverage or infer arbitrary language-level dependencies.
+
+
+## Live IDE diagnostics for AI
+
+When the Qt IDE bridge is attached, Ask and Agent modes expose `ide_get_diagnostics`. It reads up to 100 structured entries from the Problems panel, returns workspace-relative file/line/column locations, and redacts common credential assignments and bearer values. It does not read raw log files or arbitrary console text. External or live diagnostics can then be paired with `debug_source_context`, symbol tracing and the existing review/validation workflow. File changes and commands remain approval-gated.
