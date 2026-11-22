@@ -312,3 +312,18 @@ When the IDE bridge is attached, `ide_get_debug_state` reads the current Godot D
 ### PySide6 runtime compatibility
 
 OpenGDS-IDE currently constrains PySide6 to `>=6.7,<6.12`. Qt's PySide6 6.12.0 wheels have a documented CPython 3.10/3.11 reference-count regression in `Signal.emit()` that can terminate the process with `bool_dealloc`. Keep the upper bound until a corrected Qt for Python release is available and validated. The test suite includes a direct `sys.getrefcount(True)` regression check over repeated signal emissions on affected Python versions.
+
+
+## Build native desktop packages
+
+The same PyInstaller spec now selects the native packaging format for the host operating system:
+
+| Host | Output | Format |
+|---|---|---|
+| Windows x64 | `dist/OpenGDS-IDE.exe` | Single-file GUI executable with embedded icon |
+| Linux x64 | `dist/OpenGDS-IDE/` | One-folder application with the executable and bundled Qt/runtime dependencies |
+| macOS | `dist/OpenGDS-IDE.app` | Native application bundle with an `Info.plist` and generated `.icns` icon |
+
+On Windows, install 64-bit Python 3.12 and run `build_gui.bat`. On Linux or macOS, run `bash build_gui.sh`. Both scripts create an isolated build environment, install the pinned runtime requirements and PyInstaller, run the full tests, build the frozen application, and execute `tests/smoke_frozen_bundle.py`. The smoke test launches the packaged executable itself and exercises the embedded core through compile, GDSC inspection and decompile round-trip.
+
+The GitHub Actions matrix builds and smoke-tests all three native formats on their matching operating systems. The macOS app is currently an unsigned development bundle; Developer ID signing, notarization and installer/disk-image publishing are separate release operations. Godot remains an external runtime dependency for live engine, LSP and DAP workflows.
