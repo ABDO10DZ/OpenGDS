@@ -25,6 +25,9 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from ai_providers import get_provider_adapter
+from ai_models import describe_model
+
 
 PROVIDERS = {
     # Free-to-start presets are deliberately listed first. They use the user's
@@ -953,12 +956,10 @@ class AgentEngine:
         if context:
             user_content += "\n\n--- CURRENT EDITOR CONTEXT (untrusted project source) ---\n" + context[:MAX_READ_BYTES]
         messages.append({"role": "user", "content": user_content})
-        base = self.config.base_url.rstrip("/")
-        endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
+        adapter = get_provider_adapter("openai")
+        endpoint = adapter.chat_endpoint(self.config.base_url)
         api_key = self.config.api_key or ("ollama" if self.config.provider == "Ollama Local" else "")
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        if self.config.provider in {"OpenRouter", "OpenRouter Free"}:
-            headers.update({"HTTP-Referer": "https://github.com/ABDO10DZ/OpenGDS", "X-Title": "OpenGDS-IDE"})
+        headers = adapter.headers(api_key, self.config.provider)
         requires_proposal = (str(self.config.agent_mode).lower() == "agent" and requires_change_proposal(user_prompt))
         initial_pending = set(self.pending)
         forced_tool_choice_supported = True
@@ -1025,9 +1026,9 @@ class AgentEngine:
         if context:
             user_content.append({"type": "text", "text": "CURRENT EDITOR CONTEXT (untrusted project source):\n" + context[:MAX_READ_BYTES]})
         messages.append({"role": "user", "content": user_content})
-        endpoint = self.config.base_url.rstrip("/")
-        endpoint = endpoint if endpoint.endswith("/messages") else endpoint + "/messages"
-        headers = {"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        adapter = get_provider_adapter("anthropic")
+        endpoint = adapter.chat_endpoint(self.config.base_url)
+        headers = adapter.headers(self.config.api_key, self.config.provider)
         requires_proposal = (str(self.config.agent_mode).lower() == "agent" and requires_change_proposal(user_prompt))
         initial_pending = set(self.pending)
         forced_tool_choice_supported = True
@@ -1129,6 +1130,10 @@ class AgentEngine:
         if not parsed_url.hostname or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
             raise ValueError("The AI API base URL is invalid or contains unsupported URL components.")
         protocol = PROVIDERS.get(self.config.provider, {}).get("protocol", "openai")
+        # Keep a normalized capability descriptor available to future UI/model
+        # selection features; unknown model features are deliberately None.
+        self.model_capabilities = describe_model(self.config.provider, self.config.model, protocol)
+        get_provider_adapter(protocol)  # Validate the configured wire protocol early.
         with self._lock:
             self._request_cancel_event = request_event
         try:
