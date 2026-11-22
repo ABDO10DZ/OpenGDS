@@ -287,3 +287,8 @@ Discard actions require a confirmation because they remove uncommitted work. Rem
 ## Automated debugging & root-cause triage
 
 The AI agent has read-only debugging helpers: `debug_analyze_error` parses pasted compiler/runtime diagnostics and maps safe workspace file/line references to bounded source excerpts; `debug_parse_stack_trace` extracts stack frames; and `debug_source_context` reads a small excerpt around a line. These tools do not execute code or change files. Analysis is heuristic: error text and excerpts are evidence, not a verified root-cause determination. Suggested tests/build commands are discovered separately and require explicit approval before execution.
+
+
+## Lightweight static code review
+
+AI tools `project_review_file` and `project_review_workspace` perform a bounded, read-only heuristic scan for dynamic evaluation/execution, shell-enabled subprocess calls, unsafe pickle loading, swallowed bare exceptions, and TODO/FIXME markers. Workspace scans are capped, respect Focus, and block credential/excluded paths and symlinks. Findings include severity, line and snippet; they may be false positives and are not a security certification. The tools do not execute commands or modify files.
