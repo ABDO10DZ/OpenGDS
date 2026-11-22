@@ -36,7 +36,8 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
         self.assertEqual(self.service.read_file("README.md")["content"], "OpenGDS project\n")
 
     def test_blocks_absolute_parent_and_sensitive_paths(self):
-        for path in ("../outside.txt", str(self.root / "README.md"), ".env", "private.pem"):
+        for path in ("../outside.txt", str(self.root / "README.md"), ".env", "private.pem",
+                     ".aws/credentials", ".ssh/id_rsa", ".npmrc"):
             with self.subTest(path=path), self.assertRaises((ValueError, PermissionError)):
                 self.service.safe_path(path)
 
