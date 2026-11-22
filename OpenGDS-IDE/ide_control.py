@@ -140,9 +140,9 @@ class IDEControlBridge(QObject):
                 except (OSError, ValueError, TypeError):
                     continue
                 message = str(item.text() or "")[:1000]
-                message = re.sub(r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\\s*[:=]\\s*[^\\s,;]+",
-                                 r"\\1=[REDACTED]", message)
-                message = re.sub(r"(?i)bearer\\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", message)
+                message = re.sub(r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\s*[:=]\s*[^\s,;]+",
+                                 r"\1=[REDACTED]", message)
+                message = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", message)
                 rows.append({"path": relative, "line": line, "column": column, "message": message})
             return {"workspace": root.name, "diagnostics": rows, "count": len(rows),
                     "truncated": int(problems.count()) > 100,
