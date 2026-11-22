@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from contextlib import contextmanager
 import os
 import re
 import sqlite3
@@ -89,10 +90,19 @@ class ProjectIndex:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
+    @contextmanager
     def _connect(self):
+        """Open a transaction-scoped SQLite connection and always release its file handle."""
         db = sqlite3.connect(self.db_path, timeout=10)
-        db.execute("PRAGMA journal_mode=WAL")
-        return db
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def _init_db(self):
         with self._connect() as db:
