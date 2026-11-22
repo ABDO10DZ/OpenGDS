@@ -86,7 +86,9 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             ]
             try:
                 (root / "linked.gd").symlink_to(external)
-                rows.append(FakeProblem("symlink", (str(root / "linked.gd"), 1, 0)))
+                rows.append(FakeProblem("external symlink", (str(root / "linked.gd"), 1, 0)))
+                (root / "alias.gd").symlink_to(valid)
+                rows.append(FakeProblem("in-workspace symlink", (str(root / "alias.gd"), 1, 0)))
             except OSError:
                 pass
             result = IDEControlBridge(FakeWindow(root, rows)).call("ide_get_diagnostics")
@@ -111,6 +113,12 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
                 FakeProblem("external  —  external.gd:2", (str(external), 2, 0)),
                 FakeProblem("generated  —  library.gd:4", (str(generated), 4, 0)),
             ]
+            try:
+                linked_frame = root / "linked_player.gd"
+                linked_frame.symlink_to(frame)
+                stack_rows.append(FakeProblem("linked  —  linked_player.gd:9", (str(linked_frame), 9, 0)))
+            except OSError:
+                pass
             breakpoint_rows = [FakeProblem("enemy.gd:5", (str(breakpoint), 5))]
             dap = SimpleNamespace(
                 socket=SimpleNamespace(state=lambda: QAbstractSocket.SocketState.ConnectedState),
