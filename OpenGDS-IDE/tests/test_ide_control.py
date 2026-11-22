@@ -74,11 +74,15 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             external = Path(outside) / "outside.gd"
             external.write_text("extends Node\n", encoding="utf-8")
             (root / ".env").write_text("SECRET=private", encoding="utf-8")
+            virtual_env = root / ".venv"
+            virtual_env.mkdir()
+            (virtual_env / "library.gd").write_text("extends Node\\n", encoding="utf-8")
             valid = root / "safe.gd"
             valid.write_text("extends Node\n", encoding="utf-8")
             rows = [
                 FakeProblem("external", (str(external), 1, 0)),
                 FakeProblem("secret", (str(root / ".env"), 1, 0)),
+                FakeProblem("generated", (str(virtual_env / "library.gd"), 1, 0)),
                 FakeProblem("safe", (str(valid), 2, 0)),
             ]
             try:
@@ -120,6 +124,13 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             self.assertEqual(result["breakpoints"], [{"path": "enemy.gd", "line": 5, "column": 0}])
             self.assertNotIn("variables", result)
             self.assertNotIn("password", str(result))
+            running_dap = SimpleNamespace(
+                socket=SimpleNamespace(state=lambda: QAbstractSocket.SocketState.ConnectedState),
+                frame_id=None, thread_id=3, pending={},
+            )
+            running = IDEControlBridge(FakeWindow(root, [], stack_rows, breakpoint_rows, running_dap)).call("ide_get_debug_state")
+            self.assertEqual(running["state"], "running")
+            self.assertEqual(running["call_stack"], [])
 
     def test_caps_returned_diagnostics_to_one_hundred(self):
         with tempfile.TemporaryDirectory() as td:
