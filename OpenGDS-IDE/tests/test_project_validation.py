@@ -40,7 +40,8 @@ class ProjectValidationTests(unittest.TestCase):
             result = select_tests(root, ["pyproject.toml"])
             self.assertTrue(result["full_suite_recommended"])
             self.assertIn("pyproject.toml", result["full_suite_reason"])
-            self.assertIsNotNone(result["full_suite_command"])\n            self.assertEqual(result["commands"], [])
+            self.assertIsNotNone(result["full_suite_command"])
+            self.assertEqual(result["commands"], [])
 
 
     def test_pytest_projects_get_pytest_commands(self):
