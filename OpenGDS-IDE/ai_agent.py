@@ -207,9 +207,17 @@ class AgentCancelled(RuntimeError):
 
 
 class CredentialStore:
-    """Current-user encrypted credential storage using Windows DPAPI."""
+    """Store API credentials in the operating system's user keychain.
+
+    Windows DPAPI files created by earlier OpenGDS-IDE versions are read and
+    migrated to the OS keychain on first access. No plaintext file fallback is
+    provided: Linux requires a Secret Service-compatible keyring.
+    """
+
+    SERVICE_NAME = "OpenGDS-IDE"
 
     def __init__(self, directory: str | Path | None = None):
+        # Keep the legacy location only for one-time DPAPI migration.
         self.directory = Path(directory or (Path.home() / ".opengds-ide" / "secrets")).expanduser()
 
     @staticmethod
@@ -221,31 +229,13 @@ class CredentialStore:
         return DATA_BLOB, backing, blob
 
     @classmethod
-    def _protect(cls, data: bytes) -> bytes:
+    def _unprotect_legacy_dpapi(cls, data: bytes) -> bytes:
         if os.name != "nt":
-            raise RuntimeError("Persistent API-key encryption is currently supported on Windows only. Use OPENGDS_AI_API_KEY for this session on other platforms.")
-        crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        DATA_BLOB, backing, input_blob = cls._blob(data)
-        output_blob = DATA_BLOB()
-        crypt32.CryptProtectData.argtypes = [ctypes.POINTER(DATA_BLOB), ctypes.c_wchar_p,
-            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
-            ctypes.POINTER(DATA_BLOB)]
-        crypt32.CryptProtectData.restype = ctypes.c_int
-        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-        kernel32.LocalFree.restype = ctypes.c_void_p
-        if not crypt32.CryptProtectData(ctypes.byref(input_blob), "OpenGDS-IDE API credential",
-                                        None, None, None, 0, ctypes.byref(output_blob)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            return ctypes.string_at(output_blob.pbData, output_blob.cbData)
-        finally:
-            kernel32.LocalFree(output_blob.pbData)
-
-    @classmethod
-    def _unprotect(cls, data: bytes) -> bytes:
-        if os.name != "nt":
-            raise RuntimeError("DPAPI credentials can only be decrypted by the Windows user who created them.")
+            raise RuntimeError(
+                "This credential was encrypted by Windows DPAPI and can only be "
+                "migrated on the Windows account that created it. Re-enter the API key "
+                "on this computer to store it in its system keychain."
+            )
         crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         DATA_BLOB, backing, input_blob = cls._blob(data)
@@ -268,29 +258,43 @@ class CredentialStore:
         slug = re.sub(r"[^a-z0-9_-]+", "-", provider.lower()).strip("-") or "provider"
         return self.directory / f"{slug}.dpapi"
 
+    @staticmethod
+    def _keyring():
+        try:
+            import keyring
+            backend = keyring.get_keyring()
+            if getattr(backend, "priority", 0) <= 0:
+                raise RuntimeError("No secure operating-system keyring is available.")
+            return keyring
+        except Exception as exc:
+            raise RuntimeError(
+                "OpenGDS-IDE could not access a secure system keyring. "
+                "Unlock or configure Windows Credential Manager, macOS Keychain, "
+                "or Linux Secret Service, then retry. API keys are not saved in plaintext."
+            ) from exc
+
     def set(self, provider: str, api_key: str) -> None:
         key = str(api_key or "").strip()
-        path = self._path(provider)
-        if not key:
-            path.unlink(missing_ok=True)
-            return
-        encrypted = self._protect(key.encode("utf-8"))
-        self.directory.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=".credential-", dir=str(self.directory))
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(encrypted)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp_name, path)
-        finally:
-            Path(temp_name).unlink(missing_ok=True)
+        keyring = self._keyring()
+        if key:
+            keyring.set_password(self.SERVICE_NAME, str(provider), key)
+        else:
+            keyring.delete_password(self.SERVICE_NAME, str(provider))
+        # Remove a legacy encrypted file only after the keyring operation succeeds.
+        self._path(provider).unlink(missing_ok=True)
 
     def get(self, provider: str) -> str:
         path = self._path(provider)
         if path.is_file():
-            return self._unprotect(path.read_bytes()).decode("utf-8")
-        # Environment variable fallback is intentionally session-scoped.
+            legacy_key = self._unprotect_legacy_dpapi(path.read_bytes()).decode("utf-8")
+            self._keyring().set_password(self.SERVICE_NAME, str(provider), legacy_key)
+            path.unlink(missing_ok=True)
+            return legacy_key
+        keyring = self._keyring()
+        stored = keyring.get_password(self.SERVICE_NAME, str(provider))
+        if stored:
+            return stored
+        # Environment fallback is intentionally session-scoped and is never persisted.
         return os.environ.get("OPENGDS_AI_API_KEY", "")
 
 
