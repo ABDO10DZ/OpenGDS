@@ -21,6 +21,20 @@ class ProjectDebugTests(unittest.TestCase):
             self.assertEqual(len(result["source_contexts"]), 1)
             self.assertEqual(result["source_contexts"][0]["context"]["excerpt"][2]["line"], 3)
 
+
+    def test_godot_res_path_parse_error_and_stack_frame_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "player.gd"
+            source.write_text("extends Node\nfunc move():\n    pass\n", encoding="utf-8")
+            text = "res://player.gd:3 - Parse Error: Unexpected token\n  at: res://player.gd:2"
+            result = triage_error(root, text)
+            self.assertEqual(result["diagnostics"][0]["path"], "res://player.gd")
+            self.assertEqual(result["diagnostics"][0]["line"], 3)
+            self.assertEqual(result["source_contexts"][0]["context"]["focus_line"], 3)
+            self.assertEqual(result["stack_frames"][0]["path"], "player.gd")
+            self.assertEqual(result["stack_contexts"][0]["context"]["focus_line"], 2)
+
     def test_context_blocks_outside_paths_and_symlinks(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as other:
             root, outside = Path(td), Path(other)
