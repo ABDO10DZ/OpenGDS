@@ -162,9 +162,44 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
             names = [item["function"]["name"] for item in engine.available_tools()]
-            self.assertEqual(names, ["list_files", "read_file", "search_text"])
+            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff"])
             self.assertNotIn("propose_change", names)
             self.assertNotIn("propose_command", names)
+
+    def test_git_read_tools_are_available_in_ask_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
+            names = [item["function"]["name"] for item in engine.available_tools()]
+            self.assertIn("git_status", names)
+            self.assertIn("git_diff", names)
+
+    def test_git_status_and_diff_are_read_only_and_workspace_scoped(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "main.gd").write_text("extends Node\\n", encoding="utf-8")
+            subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "tests@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "OpenGDS Tests"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "main.gd"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "baseline"], check=True, capture_output=True)
+            (root / "main.gd").write_text("extends Node\\nfunc _ready():\\n    pass\\n", encoding="utf-8")
+            (root / ".env").write_text("TOKEN=never-return-this\\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask"))
+            status = engine._execute_tool("git_status", {})
+            self.assertIn("main.gd", [row["path"] for row in status["changes"]])
+            self.assertNotIn(".env", [row["path"] for row in status["changes"]])
+            diff = engine._execute_tool("git_diff", {"path": "main.gd"})
+            self.assertIn("+func _ready():", diff["diff"])
+            self.assertNotIn("TOKEN", diff["diff"])
+            self.assertEqual((root / "main.gd").read_text(encoding="utf-8"),
+                             "extends Node\\nfunc _ready():\\n    pass\\n")
+
+    def test_git_tools_require_workspace_root_to_be_repository(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
+            result = engine._execute_tool("git_status", {})
+            self.assertIn("error", result)
 
     def test_agent_mode_exposes_approval_gated_change_tools(self):
         with tempfile.TemporaryDirectory() as td:
