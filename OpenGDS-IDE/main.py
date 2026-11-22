@@ -96,6 +96,7 @@ from logging_system import CATEGORY_COLORS, configure_logging, close_logging, lo
 from project_ops import compile_project, decompile_project, validate_project_with_godot as godot_validate_project, godot_check_command, OperationSummary, iter_project_files
 from archive_tools import read_pck, pck_report, extract_pck, zip_report, extract_zip, ArchiveError, looks_like_pck_or_executable
 from ai_panel import AIAgentDock
+from ide_control import IDEControlBridge
 from git_panel import GitDock
 from app_info import APP_NAME, VERSION, DEVELOPER
 
@@ -681,6 +682,7 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(icon_file)))
         self.resize(1520, 960)
         self.settings = QSettings("OpenGDS", "IDE")
+        self.ide_control = IDEControlBridge(self)
         self.log_path = configure_logging(log_directory() / "opengds-ide.log")
         self.log_signal = LogSignal(self)
         self.log_signal.record.connect(self.render_log_record)
@@ -893,6 +895,7 @@ class MainWindow(QMainWindow):
         self.ai_dock = AIAgentDock(
             self.settings, self.project_root, self.current_editor, self,
             backend_getter=self.ensure_backend, open_path=self.open_path,
+            ide_controller=self.ide_control,
         )
         self.ai_dock.setObjectName("panel.aiAssistant")
         self.git_dock = GitDock(self.project_root, self.log, self)
