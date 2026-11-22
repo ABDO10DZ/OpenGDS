@@ -1140,7 +1140,9 @@ class AIAgentDock(QWidget):
             description = html.escape(str(step.get("description", "")))
             task_id = html.escape(str(step.get("task_id") or "manual step"))
             status = html.escape(str(step.get("status", "planned")))
-            rows.append(f"<li><b>{title}</b> <span>({status})</span>"
+            exit_code = step.get("exit_code")
+            result_label = f" · exit code {int(exit_code)}" if isinstance(exit_code, int) else ""
+            rows.append(f"<li><b>{title}</b> <span>({status}{result_label})</span>"
                         f"<br>{description}<br><i>Validation task: {task_id}</i></li>")
         rows.extend(["</ol>", f"<p>{html.escape(plan.get('execution_policy', ''))}</p>"])
         self.task_plan_view.setHtml("".join(rows))
