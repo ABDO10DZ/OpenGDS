@@ -64,8 +64,8 @@ hiddenimports = [
     "keyring",
 ]
 
-# Collect native Qt libraries/plugins and dynamically loaded keyring backends.
-for package in ("PySide6", "shiboken6", "zstandard", "keyring"):
+# PyInstaller's PySide6 Qt hook collects the imported Qt modules and required plugins.\n# Collect only the smaller native/runtime packages whose imports are dynamic.
+for package in ("shiboken6", "zstandard", "keyring"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas += package_datas
     binaries += package_binaries
