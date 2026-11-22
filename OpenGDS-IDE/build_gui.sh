@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PYTHON_BIN="\${PYTHON:-python3}"
+PYTHON_BIN="${PYTHON:-python3}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "ERROR: Python 3.10+ was not found. Set PYTHON=/path/to/python3." >&2
   exit 10
