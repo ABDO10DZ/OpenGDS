@@ -20,7 +20,7 @@ class ProjectTaskDiscoveryTests(unittest.TestCase):
             self.assertIn("python-unittest", by_id)
             self.assertIn("python-pytest", by_id)
             self.assertEqual(by_id["python-unittest"]["command"],
-                             [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
+                             [sys.executable, "-m", "unittest", "discover", "-v"])
 
     def test_detects_node_test_script_but_never_copies_or_executes_script_body(self):
         with tempfile.TemporaryDirectory() as td:
@@ -45,16 +45,14 @@ class ProjectTaskDiscoveryTests(unittest.TestCase):
             self.assertEqual(tasks["cmake-configure"]["command"],
                              ["cmake", "-S", ".", "-B", "build"])
 
-    def test_configured_cmake_build_offers_build_and_ctest(self):
+    def test_cmake_offers_only_a_safe_configure_step(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "CMakeLists.txt").write_text("project(sample)\n", encoding="utf-8")
-            (root / "build").mkdir()
-            (root / "build" / "CMakeCache.txt").write_text("cache", encoding="utf-8")
             tasks = {task["id"] for task in discover_project_tasks(root)}
-            self.assertIn("cmake-build", tasks)
-            self.assertIn("cmake-test", tasks)
-            self.assertNotIn("cmake-configure", tasks)
+            self.assertIn("cmake-configure", tasks)
+            self.assertNotIn("cmake-build", tasks)
+            self.assertNotIn("cmake-test", tasks)
 
     def test_agent_exposes_manifest_discovery_without_running_scripts(self):
         with tempfile.TemporaryDirectory() as td:
