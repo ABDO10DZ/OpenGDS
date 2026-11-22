@@ -223,6 +223,7 @@ class AgentEngineTests(unittest.TestCase):
             self.assertIn("propose_command", names)
             self.assertIn("project_review_file", names)
             self.assertIn("project_review_workspace", names)
+            self.assertIn("project_select_tests", names)
 
     def test_free_provider_presets_are_available_by_default(self):
         self.assertEqual(AgentConfig().provider, "OpenRouter Free")
