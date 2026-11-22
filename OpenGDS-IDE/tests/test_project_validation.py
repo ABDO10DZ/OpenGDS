@@ -18,7 +18,7 @@ class ProjectValidationTests(unittest.TestCase):
             self.assertEqual([row["path"] for row in result["selected_tests"]], ["tests/test_ai_agent.py"])
             self.assertEqual(len(result["commands"]), 1)
             self.assertIn("test_ai_agent.py", result["commands"][0]["command"])
-            self.assertTrue(result["commands"][0]["approval_required"])
+            self.assertTrue(result["commands"][0]["approval_required"])\n            self.assertEqual(result["commands"][0]["task_id"], "python-unittest")
             self.assertFalse(result["full_suite_recommended"])
 
     def test_test_file_change_selects_itself(self):
@@ -39,7 +39,21 @@ class ProjectValidationTests(unittest.TestCase):
             result = select_tests(root, ["pyproject.toml"])
             self.assertTrue(result["full_suite_recommended"])
             self.assertIn("pyproject.toml", result["full_suite_reason"])
-            self.assertIsNotNone(result["full_suite_command"])
+            self.assertIsNotNone(result["full_suite_command"])\n            self.assertEqual(result["commands"], [])
+
+
+    def test_pytest_projects_get_pytest_commands(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+            (root / "core.py").write_text("def run(): pass\n", encoding="utf-8")
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_core.py").write_text("def test_run(): assert True\n", encoding="utf-8")
+            result = select_tests(root, ["core.py"])
+            self.assertEqual(result["runner"], "pytest")
+            self.assertEqual(result["commands"][0]["command"][1:3], ["-m", "pytest"])
+            self.assertEqual(result["commands"][0]["task_id"], "python-pytest")
 
     def test_unknown_mapping_recommends_full_suite(self):
         with tempfile.TemporaryDirectory() as td:
