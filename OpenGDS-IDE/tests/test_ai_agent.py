@@ -176,7 +176,7 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
             names = [item["function"]["name"] for item in engine.available_tools()]
-            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact"])
+            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact", "debug_analyze_error", "debug_parse_stack_trace", "debug_source_context"])
             self.assertNotIn("propose_change", names)
             self.assertNotIn("propose_command", names)
 
@@ -587,3 +587,17 @@ class AgentEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_debug_tools_parse_error_context_and_stack_without_execution(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "player.gd").write_text("extends Node\nfunc move():\n    pass\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask", scope="all"))
+            err = "res://player.gd:3 - Parse Error: Unexpected token\n  File \"src.py\", line 7, in run"
+            parsed = engine._execute_tool("debug_analyze_error", {"error_text": err})
+            self.assertEqual(parsed["diagnostics"][0]["line"], 3)
+            self.assertEqual(parsed["source_contexts"][0]["context"]["focus_line"], 3)
+            frames = engine._execute_tool("debug_parse_stack_trace", {"stack_trace": err})
+            self.assertEqual(frames["frames"][0]["line"], 7)
+            excerpt = engine._execute_tool("debug_source_context", {"path": "player.gd", "line": 2})
+            self.assertTrue(any(row["focus"] for row in excerpt["excerpt"]))
