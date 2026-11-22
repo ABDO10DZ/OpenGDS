@@ -111,7 +111,7 @@ class IDEControlBridge(QObject):
             if problems is None:
                 return {"workspace": root.name, "diagnostics": [], "count": 0}
             rows = []
-            blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot", ".opengds", ".opengds-ide", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache"}
+            blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot", ".opengds", ".opengds-ide", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache"}
             blocked_names = {"secrets.json", "credentials.json", "credentials.db", "token.json", "auth.json",
                              ".npmrc", ".pypirc", ".netrc", ".git-credentials", "service-account.json"}
             blocked_suffixes = {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
@@ -166,7 +166,7 @@ class IDEControlBridge(QObject):
                     relative = candidate.relative_to(root).as_posix()
                     parts = [part.lower() for part in Path(relative).parts]
                     blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets",
-                                    ".godot", ".opengds", ".opengds-ide"}
+                                    ".godot", ".opengds", ".opengds-ide", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache"}
                     blocked_names = {"secrets.json", "credentials.json", "credentials.db", "token.json",
                                      "auth.json", ".npmrc", ".pypirc", ".netrc", ".git-credentials",
                                      "service-account.json"}
