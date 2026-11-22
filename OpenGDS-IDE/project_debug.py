@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_ERROR = re.compile(r"(?P<path>(?:[A-Za-z]:[\\/]|/)?[^:\n]+\.(?:gd|py|js|ts|cs|cpp|c|rs|go|java|kt|gdc)):(?P<line>\d+)(?::(?P<column>\d+))?:\s*(?P<message>.+)", re.I)
-_TRACE = re.compile(r"(?:File \"(?P<pyfile>[^\"]+)\", line (?P<pyline>\d+)|(?P<path>[^:\n]+\.(?:gd|cs|cpp|js|ts|java|rs)):(?P<line>\d+))", re.I)
+_ERROR = re.compile(r"(?P<path>(?:res://)?(?:[A-Za-z]:[\\/]|/)?[^:\n]+\.(?:gd|py|js|ts|cs|cpp|c|rs|go|java|kt|gdc)):(?P<line>\d+)(?::(?P<column>\d+))?:\s*(?P<message>.+)", re.I)
+_TRACE = re.compile(r"(?:File \"(?P<pyfile>[^\"]+)\", line (?P<pyline>\d+)|(?P<path>(?:res://)?[^:\n]+\.(?:gd|cs|cpp|js|ts|java|rs)):(?P<line>\d+))", re.I)
 
 def parse_diagnostics(text: str, limit: int = 100) -> list[dict]:
     rows=[]
