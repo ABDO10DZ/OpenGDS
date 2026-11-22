@@ -31,6 +31,7 @@ from project_tasks import discover_project_tasks
 from task_planner import build_task_plan
 from project_index import ProjectIndex
 from project_analysis import architecture_summary, trace_symbol, change_impact
+from project_debug import parse_diagnostics, parse_stack_trace, triage_error, source_context
 
 
 PROVIDERS = {
@@ -345,12 +346,18 @@ PROJECT_INDEX_TOOLS = [
     {"type": "function", "function": {"name": "project_change_impact", "description": "Estimate likely files affected by changing a source file using shared declarations and symbol-name matches. Heuristic, not a guaranteed dependency graph.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["path"], "additionalProperties": False}}},
 ]
 
+DEBUG_TOOLS = [
+    {"type": "function", "function": {"name": "debug_analyze_error", "description": "Parse compiler/runtime error output and safely map file/line references to source excerpts. Root-cause analysis remains heuristic.", "parameters": {"type": "object", "properties": {"error_text": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["error_text"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "debug_parse_stack_trace", "description": "Extract file/line stack frames from a pasted traceback or runtime stack. Does not execute code.", "parameters": {"type": "object", "properties": {"stack_trace": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["stack_trace"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "debug_source_context", "description": "Read a small, safe source excerpt around a workspace-relative line number.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "line": {"type": "integer", "minimum": 1}, "radius": {"type": "integer", "minimum": 0, "maximum": 8}}, "required": ["path", "line"], "additionalProperties": False}}},
+]
+
 PROJECT_TASK_TOOLS = [
     {"type": "function", "function": {"name": "detect_project_tasks", "description": "Detect known project test/build tasks by inspecting safe manifests. This never executes commands; returned commands still require explicit approval.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
 ]
 
 
-READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS
+READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + DEBUG_TOOLS
 
 OPENGDS_READ_TOOLS = [
     {"type": "function", "function": {"name": "opengds_inspect", "description": "Use the bundled OpenGDS core API to inspect a GDSC file. Supports info, audit, consts, disasm, hexdump and static dbg modes. Read-only.", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["info", "audit", "consts", "disasm", "hexdump", "dbg"]}, "path": {"type": "string"}}, "required": ["mode", "path"], "additionalProperties": False}}},
@@ -699,6 +706,16 @@ class AgentEngine:
                 tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
                 return {"tasks": tasks, "count": len(tasks),
                         "message": "Discovery only: no command was executed. Select a task and submit its command through propose_command for explicit approval."}
+            if name == "debug_analyze_error":
+                return triage_error(self.workspace, str(args.get("error_text", "")), args.get("limit", 20))
+            if name == "debug_parse_stack_trace":
+                return {"frames": parse_stack_trace(str(args.get("stack_trace", "")), args.get("limit", 50))}
+            if name == "debug_source_context":
+                path = self._safe_path(str(args.get("path", "")))
+                relative = path.relative_to(self.workspace).as_posix()
+                if not self._scope_allows(relative):
+                    raise PermissionError("Source context path is outside the current assistant focus.")
+                return source_context(self.workspace, relative, int(args.get("line", 1)), int(args.get("radius", 4)))
             if name.startswith("project_index_") or name in {"project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact"}:
                 if self._project_index is None:
                     self._project_index = ProjectIndex(self.workspace, safe_path=self._safe_path,
@@ -1108,7 +1125,7 @@ class AgentEngine:
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
             return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + DEBUG_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
@@ -1257,7 +1274,7 @@ class AgentEngine:
             "You are running inside OpenGDS-IDE, a desktop IDE for GDScript/Godot projects and the OpenGDS GDSC compiler/decompiler. "
             "You are not a generic chat bot detached from the application: know that the user can open/edit files in the editor, navigate projects, review AI proposals, use Source Control, and run the bundled OpenGDS core from the OpenGDS menu. "
             "When Focus is OpenGDS core, use the native opengds_inspect/opengds_decompile/opengds_compile tools rather than inventing CLI commands or invoking a shell. "
-            "For architecture questions or change-risk estimates, refresh/use the project symbol index, trace relevant symbols, and run project_change_impact on the target file before editing. Explain that results are static heuristics, not verified runtime dependencies. For multi-step implementation or debugging requests, first inspect the workspace and available checks, then create a concise task plan with create_task_plan. Keep the plan visible for user review. When proposing a discovered validation command, include its task_id so the IDE can track the approved result. Execute only one bounded approved action at a time, inspect actual output, and update the user with verified results. Never claim a test passed unless its approved command actually completed with exit code 0. "
+            "For debugging, use debug_analyze_error to parse error output and retrieve safe source context, and debug_parse_stack_trace to map stack frames. Treat root-cause ranking as heuristic; request project checks through approval-gated commands when needed. For architecture questions or change-risk estimates, refresh/use the project symbol index, trace relevant symbols, and run project_change_impact on the target file before editing. Explain that results are static heuristics, not verified runtime dependencies. For multi-step implementation or debugging requests, first inspect the workspace and available checks, then create a concise task plan with create_task_plan. Keep the plan visible for user review. When proposing a discovered validation command, include its task_id so the IDE can track the approved result. Execute only one bounded approved action at a time, inspect actual output, and update the user with verified results. Never claim a test passed unless its approved command actually completed with exit code 0. "
             "Those tools call the IDE's own OpenGDSBackend adapter, which dispatches to the bundled OpenGDS.py core in development or its embedded CLI entry point in a packaged build. "
             "Use opengds_inspect for read-only GDSC analysis, opengds_decompile to prepare a reviewable .gd proposal, and opengds_compile to queue a compile action; compilation/output changes happen only after user approval. "
             "Use propose_change for ordinary code writing/refactoring; all writes are reviewed in the Changes view and nothing is applied automatically. "
