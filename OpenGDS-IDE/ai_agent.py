@@ -318,7 +318,13 @@ OPENAI_TOOLS = [
 ]
 
 
-READ_ONLY_TOOLS = OPENAI_TOOLS[:3]
+GIT_READ_TOOLS = [
+    {"type": "function", "function": {"name": "git_status", "description": "Read the current Git branch and workspace changes. Secret paths are omitted. Read-only.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "git_diff", "description": "Read a bounded diff for one workspace-relative source file against HEAD. Secret files are blocked. Read-only.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}}},
+]
+
+
+READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS
 
 OPENGDS_READ_TOOLS = [
     {"type": "function", "function": {"name": "opengds_inspect", "description": "Use the bundled OpenGDS core API to inspect a GDSC file. Supports info, audit, consts, disasm, hexdump and static dbg modes. Read-only.", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["info", "audit", "consts", "disasm", "hexdump", "dbg"]}, "path": {"type": "string"}}, "required": ["mode", "path"], "additionalProperties": False}}},
@@ -654,6 +660,60 @@ class AgentEngine:
                 except UnicodeDecodeError as exc:
                     raise ValueError("Binary or non-UTF-8 files cannot be read by the agent.") from exc
                 return {"path": path.relative_to(self.workspace).as_posix(), "content": content}
+            if name == "git_status":
+                root_result = subprocess.run(
+                    ["git", "-C", str(self.workspace), "rev-parse", "--show-toplevel"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
+                )
+                if root_result.returncode:
+                    raise RuntimeError("The active workspace is not a Git repository or Git is unavailable.")
+                git_root = Path(root_result.stdout.strip()).resolve()
+                if git_root != self.workspace:
+                    raise PermissionError("Git workspace root must match the active IDE workspace.")
+                status = subprocess.run(
+                    ["git", "-C", str(self.workspace), "status", "--porcelain=v1", "--branch", "--untracked-files=all"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=15, check=False,
+                )
+                if status.returncode:
+                    raise RuntimeError(status.stderr[-2000:] or "Git status failed.")
+                rows = status.stdout.splitlines()
+                branch = rows[0][3:].strip() if rows and rows[0].startswith("## ") else "unknown"
+                changes = []
+                for row in rows[1:]:
+                    if len(row) < 4:
+                        continue
+                    file_path = row[3:].split(" -> ")[-1].strip().strip('"')
+                    parts = [part.lower() for part in Path(file_path.replace("\\\\", "/")).parts]
+                    if any(part in EXCLUDED_DIRS or part.startswith(".env") or part in SENSITIVE_NAMES
+                           or Path(part).suffix.lower() in SENSITIVE_SUFFIXES for part in parts):
+                        continue
+                    changes.append({"status": row[:2], "path": file_path})
+                return {"branch": branch, "changes": changes[:200], "truncated": len(changes) > 200}
+            if name == "git_diff":
+                raw_path = str(args.get("path", ""))
+                path = self._safe_path(raw_path)
+                relative = path.relative_to(self.workspace).as_posix()
+                if not self._scope_allows(relative):
+                    raise PermissionError("Git diff path is outside the current assistant focus.")
+                root_result = subprocess.run(
+                    ["git", "-C", str(self.workspace), "rev-parse", "--show-toplevel"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
+                )
+                if root_result.returncode or Path(root_result.stdout.strip()).resolve() != self.workspace:
+                    raise RuntimeError("The active workspace must be the Git repository root.")
+                result = subprocess.run(
+                    ["git", "-C", str(self.workspace), "diff", "--no-ext-diff", "--no-textconv",
+                     "--no-color", "--unified=3", "HEAD", "--", relative],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=15, check=False,
+                )
+                if result.returncode:
+                    raise RuntimeError(result.stderr[-2000:] or "Git diff failed.")
+                return {"path": relative, "diff": result.stdout[:30000],
+                        "truncated": len(result.stdout) > 30000}
             if name == "search_text":
                 query = str(args.get("query", "")).strip()
                 if not query:
@@ -967,7 +1027,7 @@ class AgentEngine:
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
             return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + GIT_READ_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
