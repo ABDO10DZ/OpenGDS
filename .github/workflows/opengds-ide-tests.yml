@@ -77,6 +77,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: OpenGDS-IDE-${{ runner.os }}-Python-${{ matrix.python }}
-          path: dist/OpenGDS-IDE*
+          path: OpenGDS-IDE/dist/OpenGDS-IDE*
           if-no-files-found: error
           retention-days: 7
