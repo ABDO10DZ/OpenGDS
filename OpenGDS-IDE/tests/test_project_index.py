@@ -43,6 +43,21 @@ class ProjectIndexTests(unittest.TestCase):
             idx2 = ProjectIndex(root, cache_root=cache)
             self.assertEqual(idx2.search("public_api")[0]["path"], "safe.py")
 
+
+    def test_database_handles_are_released_after_index_operations(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "workspace"
+            cache = Path(td) / "cache"
+            root.mkdir()
+            (root / "sample.py").write_text("def sample(): pass\n", encoding="utf-8")
+            index = ProjectIndex(root, cache_root=cache)
+            index.refresh()
+            index.status()
+            index.search("sample")
+            shutil.rmtree(cache)
+            self.assertFalse(cache.exists())
+
     def test_file_size_bound(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
