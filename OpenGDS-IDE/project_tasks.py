@@ -37,7 +37,18 @@ def discover_project_tasks(workspace: str | Path, *, safe_path=None) -> list[dic
             "reason": "Run the project's Python unittest discovery suite",
             "source": "Python test configuration or tests directory",
         })
-        if exists("pyproject.toml") or exists("pytest.ini"):
+        pytest_configured = False
+        for marker in ("pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", "requirements.txt", "requirements-dev.txt"):
+            if not exists(marker):
+                continue
+            try:
+                manifest = safe_path(marker) if safe_path else root / marker
+                if marker == "pytest.ini" or "pytest" in manifest.read_text(encoding="utf-8-sig").lower():
+                    pytest_configured = True
+                    break
+            except (OSError, UnicodeError):
+                continue
+        if pytest_configured:
             tasks.append({
                 "id": "python-pytest",
                 "label": "Python pytest",
