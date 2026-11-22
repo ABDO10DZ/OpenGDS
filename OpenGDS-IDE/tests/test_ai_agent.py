@@ -9,6 +9,20 @@ from types import SimpleNamespace
 class AgentEngineTests(unittest.TestCase):
 
 
+    def test_project_index_tools_available_and_work(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src.py").write_text("class CrossPlatform:\n    def run(self): pass\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask"))
+            names = [item["function"]["name"] for item in engine.available_tools()]
+            for name in ("project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files"):
+                self.assertIn(name, names)
+            self.assertEqual(engine._execute_tool("project_index_refresh", {})["updated"], 1)
+            result = engine._execute_tool("project_symbol_search", {"query": "CrossPlatform"})
+            self.assertEqual(result["results"][0]["path"], "src.py")
+            status = engine._execute_tool("project_index_status", {})
+            self.assertEqual(status["indexed_files"], 1)
+
     def test_ide_controls_are_exposed_only_when_bridge_is_attached(self):
         with tempfile.TemporaryDirectory() as td:
             without_bridge = AgentEngine(td, AgentConfig(scope="gdscript", agent_mode="ask"))
