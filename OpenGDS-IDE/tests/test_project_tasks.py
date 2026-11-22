@@ -20,7 +20,7 @@ class ProjectTaskDiscoveryTests(unittest.TestCase):
             self.assertIn("python-unittest", by_id)
             self.assertIn("python-pytest", by_id)
             self.assertEqual(by_id["python-unittest"]["command"],
-                             [sys.executable, "-m", "unittest", "discover", "-v"])
+                             [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
 
     def test_detects_node_test_script_but_never_copies_or_executes_script_body(self):
         with tempfile.TemporaryDirectory() as td:
