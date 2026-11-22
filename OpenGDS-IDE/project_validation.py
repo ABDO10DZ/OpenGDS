@@ -102,6 +102,9 @@ def select_tests(workspace: str | Path, changed_paths: list[str], *, scope_allow
         raise TypeError("changed_paths must be a list of workspace-relative paths.")
     changed = list(dict.fromkeys(_safe_relative(row) for row in changed_paths))
     if not changed:
+    if full_suite:
+        commands = []
+
         return {
             "changed_paths": [],
             "selected_tests": [],
