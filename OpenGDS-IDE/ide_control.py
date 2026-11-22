@@ -6,10 +6,11 @@ remain in AgentEngine's explicit approval workflow.
 """
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path, PureWindowsPath
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal, Qt
 
 
 class IDEControlBridge(QObject):
