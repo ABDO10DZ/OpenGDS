@@ -207,7 +207,7 @@ class AgentEngineTests(unittest.TestCase):
             self.assertIn("+func _ready():", diff["diff"])
             self.assertNotIn("TOKEN", diff["diff"])
             self.assertEqual((root / "main.gd").read_text(encoding="utf-8"),
-                             "extends Node\\nfunc _ready():\\n    pass\\n")
+                             "extends Node\nfunc _ready():\n    pass\n")
 
     def test_git_tools_require_workspace_root_to_be_repository(self):
         with tempfile.TemporaryDirectory() as td:
