@@ -18,7 +18,8 @@ class IDEControlBridge(QObject):
     _request = Signal(str, dict, object)
 
     def __init__(self, window):
-        super().__init__(window)
+        parent = window if isinstance(window, QObject) else None
+        super().__init__(parent)
         self.window = window
         self._request.connect(self._dispatch)
 
