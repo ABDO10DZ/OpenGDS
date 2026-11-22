@@ -156,7 +156,7 @@ class IDEControlBridge(QObject):
                 connected = bool(socket and socket.state() == QAbstractSocket.SocketState.ConnectedState)
             except Exception:
                 connected = False
-            paused = bool(dap is not None and getattr(dap, "frame_id", None) is not None)
+            paused = bool(connected and dap is not None and getattr(dap, "frame_id", None) is not None)
 
             def safe_location(data):
                 if not isinstance(data, (tuple, list)) or len(data) < 2:
