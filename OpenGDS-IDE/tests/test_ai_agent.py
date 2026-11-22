@@ -39,6 +39,8 @@ class AgentEngineTests(unittest.TestCase):
             self.assertIn("ide_get_diagnostics", names)
             result = with_bridge._execute_tool("ide_get_state", {})
             self.assertEqual(result["tool"], "ide_get_state")
+            diagnostics = with_bridge._execute_tool("ide_get_diagnostics", {})
+            self.assertEqual(diagnostics["tool"], "ide_get_diagnostics")
 
     def test_openai_stream_forwards_text_and_reassembles_tool_call_fragments(self):
         import json
