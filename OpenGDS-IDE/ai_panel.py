@@ -409,7 +409,7 @@ class AgentChangeReviewDialog(QDialog):
 
 
 class AIAgentDock(QWidget):
-    def __init__(self, settings, workspace_getter, editor_getter, parent=None, *, backend_getter=None, open_path=None):
+    def __init__(self, settings, workspace_getter, editor_getter, parent=None, *, backend_getter=None, open_path=None, ide_controller=None):
         super().__init__(parent)
         self.setWindowTitle("AI ASSISTANT")
         self.settings = settings
@@ -417,6 +417,7 @@ class AIAgentDock(QWidget):
         self.editor_getter = editor_getter
         self.backend_getter = backend_getter
         self.open_path = open_path
+        self.ide_controller = ide_controller
         self.credentials = CredentialStore()
         self.engine: AgentEngine | None = None
         self.engine_root: Path | None = None
@@ -847,7 +848,8 @@ class AIAgentDock(QWidget):
         config = self._config()
         if self.engine is None or self.engine_root != root:
             backend = self.backend_getter() if self.backend_getter else None
-            self.engine = AgentEngine(root, config, credential_store=self.credentials, backend=backend)
+            self.engine = AgentEngine(root, config, credential_store=self.credentials, backend=backend,
+                                      ide_controller=self.ide_controller)
             self.engine_root = root
         else:
             self.engine.config = config
