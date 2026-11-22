@@ -72,3 +72,10 @@ jobs:
           OPENGDS_BUILD_SKIP_INSTALL: "1"
           OPENGDS_BUILD_SKIP_TESTS: "1"
         run: bash build_gui.sh
+      - name: Upload verified platform package
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenGDS-IDE-${{ runner.os }}-Python-${{ matrix.python }}
+          path: dist/OpenGDS-IDE*
+          if-no-files-found: error
+          retention-days: 7
