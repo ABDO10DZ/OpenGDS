@@ -16,14 +16,21 @@ fi
 }
 
 VENV_DIR=".build-venv-gui"
-VENV_PY="$VENV_DIR/bin/python"
-if [[ ! -x "$VENV_PY" ]]; then
-  "$PYTHON_BIN" -m venv "$VENV_DIR"
+if [[ "${OPENGDS_BUILD_USE_CURRENT_PYTHON:-0}" == "1" ]]; then
+  VENV_PY="$PYTHON_BIN"
+else
+  VENV_PY="$VENV_DIR/bin/python"
+  if [[ ! -x "$VENV_PY" ]]; then
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
+  fi
 fi
 
-"$VENV_PY" -m pip install --upgrade pip
-"$VENV_PY" -m pip install -r requirements.txt "PyInstaller>=6.10,<7"
+if [[ "${OPENGDS_BUILD_SKIP_INSTALL:-0}" != "1" ]]; then
+  "$VENV_PY" -m pip install --upgrade pip
+  "$VENV_PY" -m pip install -r requirements.txt "PyInstaller>=6.10,<7"
+fi
 
+if [[ "${OPENGDS_BUILD_SKIP_TESTS:-0}" != "1" ]]; then
 echo "[1/5] Checking source syntax..."
 "$VENV_PY" - <<'PY'
 from pathlib import Path
@@ -42,6 +49,7 @@ PY
 
 echo "[2/5] Running the full test suite..."
 QT_QPA_PLATFORM=offscreen "$VENV_PY" -m unittest discover -s tests -v
+fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "[3/5] Creating the macOS application icon..."
