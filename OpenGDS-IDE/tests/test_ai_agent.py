@@ -13,7 +13,7 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "src.py").write_text("class CrossPlatform:\n    def run(self): pass\n", encoding="utf-8")
-            engine = AgentEngine(root, AgentConfig(agent_mode="ask"))
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask", scope="all"))
             names = [item["function"]["name"] for item in engine.available_tools()]
             for name in ("project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files"):
                 self.assertIn(name, names)
