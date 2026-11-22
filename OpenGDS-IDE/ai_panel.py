@@ -862,6 +862,7 @@ class AIAgentDock(QWidget):
             self.engine = AgentEngine(root, config, credential_store=self.credentials, backend=backend,
                                       ide_controller=self.ide_controller)
             self.engine_root = root
+            self._refresh_task_plan()
         else:
             self.engine.config = config
         return self.engine
@@ -1412,6 +1413,7 @@ class AIAgentDock(QWidget):
         if changed_paths and owner is not None and hasattr(owner, "reload_agent_files"):
             owner.reload_agent_files(changed_paths)
         self.refresh_pending()
+        self._refresh_task_plan()
         self.send_button.setEnabled(True)
         for button in self.approval_buttons:
             button.setEnabled(True)
