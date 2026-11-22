@@ -707,7 +707,10 @@ class AgentEngine:
                 return {"tasks": tasks, "count": len(tasks),
                         "message": "Discovery only: no command was executed. Select a task and submit its command through propose_command for explicit approval."}
             if name == "debug_analyze_error":
-                return triage_error(self.workspace, str(args.get("error_text", "")), args.get("limit", 20))
+                result = triage_error(self.workspace, str(args.get("error_text", "")), args.get("limit", 20))
+                result["source_contexts"] = [row for row in result.get("source_contexts", [])
+                    if self._scope_allows(row.get("context", {}).get("path", ""))]
+                return result
             if name == "debug_parse_stack_trace":
                 return {"frames": parse_stack_trace(str(args.get("stack_trace", "")), args.get("limit", 50))}
             if name == "debug_source_context":
