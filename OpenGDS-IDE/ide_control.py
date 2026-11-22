@@ -6,12 +6,46 @@ remain in AgentEngine's explicit approval workflow.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 from pathlib import Path, PureWindowsPath
 
 from PySide6.QtCore import QObject, QThread, Signal, Qt
 from PySide6.QtNetwork import QAbstractSocket
+
+
+
+def _safe_workspace_location(root: Path, raw_path: object, workspace_path: str | Path | None = None) -> tuple[Path, str]:
+    """Resolve an IDE-reported path while checking symlinks before following them."""
+    root = Path(root).expanduser().resolve()
+    raw = str(raw_path or "").strip()
+    if not raw or "\\x00" in raw:
+        raise ValueError("A source path is required.")
+    supplied = Path(raw).expanduser()
+    bases = []
+    for item in (workspace_path, root):
+        if item is None:
+            continue
+        base = Path(os.path.abspath(Path(item).expanduser()))
+        if base not in bases and base.resolve(strict=False) == root:
+            bases.append(base)
+    for base in bases:
+        lexical = Path(os.path.abspath(supplied if supplied.is_absolute() else base / supplied))
+        try:
+            relative = lexical.relative_to(base)
+        except ValueError:
+            continue
+        current = base
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise PermissionError("Symbolic-link diagnostic paths are blocked.")
+        resolved = current.resolve(strict=False)
+        if resolved != root and root not in resolved.parents:
+            continue
+        return resolved, relative.as_posix()
+    raise PermissionError("Diagnostic path is outside the active workspace.")
 
 
 class IDEControlBridge(QObject):
@@ -112,7 +146,7 @@ class IDEControlBridge(QObject):
             if problems is None:
                 return {"workspace": root.name, "diagnostics": [], "count": 0}
             rows = []
-            blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot", ".opengds", ".opengds-ide", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache"}
+            blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot", ".opengds", ".opengds-ide", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache"}
             blocked_names = {"secrets.json", "credentials.json", "credentials.db", "token.json", "auth.json",
                              ".npmrc", ".pypirc", ".netrc", ".git-credentials", "service-account.json"}
             blocked_suffixes = {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
@@ -124,17 +158,11 @@ class IDEControlBridge(QObject):
                 raw_path, raw_line = data[0], data[1]
                 raw_column = data[2] if len(data) > 2 else 0
                 try:
-                    candidate = Path(str(raw_path)).expanduser().resolve(strict=False)
-                    relative = candidate.relative_to(root).as_posix()
+                    candidate, relative = _safe_workspace_location(root, raw_path, window.project_root())
                     parts = [part.lower() for part in Path(relative).parts]
                     if any(part in blocked_dirs or part.startswith(".env") or part in blocked_names
                            or Path(part).suffix.lower() in blocked_suffixes for part in parts):
                         continue
-                    current = root
-                    for part in Path(relative).parts:
-                        current = current / part
-                        if current.is_symlink():
-                            raise PermissionError("Symlink diagnostic path")
                     if not candidate.is_file():
                         continue
                     line = max(1, int(raw_line))
@@ -163,8 +191,7 @@ class IDEControlBridge(QObject):
                 if not isinstance(data, (tuple, list)) or len(data) < 2:
                     return None
                 try:
-                    candidate = Path(str(data[0])).expanduser().resolve(strict=False)
-                    relative = candidate.relative_to(root).as_posix()
+                    candidate, relative = _safe_workspace_location(root, data[0], window.project_root())
                     parts = [part.lower() for part in Path(relative).parts]
                     blocked_dirs = {".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets",
                                     ".godot", ".opengds", ".opengds-ide", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox", ".pytest_cache"}
@@ -175,11 +202,6 @@ class IDEControlBridge(QObject):
                     if any(part in blocked_dirs or part.startswith(".env") or part in blocked_names
                            or Path(part).suffix.lower() in blocked_suffixes for part in parts):
                         return None
-                    current = root
-                    for part in Path(relative).parts:
-                        current = current / part
-                        if current.is_symlink():
-                            return None
                     if not candidate.is_file():
                         return None
                     return {"path": relative, "line": max(1, int(data[1])),
