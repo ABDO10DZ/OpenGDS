@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt
+from PySide6.QtNetwork import QAbstractSocket
+from types import SimpleNamespace
 
 from ide_control import IDEControlBridge
 
@@ -33,10 +35,13 @@ class FakeProblems:
 
 
 class FakeWindow(QObject):
-    def __init__(self, root, rows):
+    def __init__(self, root, rows, stack_rows=None, breakpoint_rows=None, dap=None):
         super().__init__()
         self._root = root
         self.problems = FakeProblems(rows)
+        self.call_stack_view = FakeProblems(stack_rows or [])
+        self.breakpoints_view = FakeProblems(breakpoint_rows or [])
+        self.dap = dap
 
     def project_root(self):
         return self._root
@@ -83,6 +88,38 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
                 pass
             result = IDEControlBridge(FakeWindow(root, rows)).call("ide_get_diagnostics")
             self.assertEqual([row["path"] for row in result["diagnostics"]], ["safe.gd"])
+
+
+    def test_debug_state_exposes_stack_and_breakpoints_but_not_variable_values(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside:
+            root = Path(td)
+            frame = root / "player.gd"
+            breakpoint = root / "enemy.gd"
+            frame.write_text("extends Node\n", encoding="utf-8")
+            breakpoint.write_text("extends Node\n", encoding="utf-8")
+            external = Path(outside) / "external.gd"
+            external.write_text("extends Node\n", encoding="utf-8")
+            stack_rows = [
+                FakeProblem("move_player  —  player.gd:7", (str(frame), 7, 2)),
+                FakeProblem("external  —  external.gd:2", (str(external), 2, 0)),
+            ]
+            breakpoint_rows = [FakeProblem("enemy.gd:5", (str(breakpoint), 5))]
+            dap = SimpleNamespace(
+                socket=SimpleNamespace(state=lambda: QAbstractSocket.SocketState.ConnectedState),
+                frame_id=42, thread_id=3, pending={1: "stackTrace"},
+                variables={"password": "never expose"},
+            )
+            window = FakeWindow(root, [], stack_rows, breakpoint_rows, dap)
+            result = IDEControlBridge(window).call("ide_get_debug_state")
+            self.assertEqual(result["state"], "paused")
+            self.assertTrue(result["connected"])
+            self.assertEqual(result["thread_id"], 3)
+            self.assertEqual(result["call_stack"], [{
+                "function": "move_player", "path": "player.gd", "line": 7, "column": 2
+            }])
+            self.assertEqual(result["breakpoints"], [{"path": "enemy.gd", "line": 5, "column": 0}])
+            self.assertNotIn("variables", result)
+            self.assertNotIn("password", str(result))
 
     def test_caps_returned_diagnostics_to_one_hundred(self):
         with tempfile.TemporaryDirectory() as td:
