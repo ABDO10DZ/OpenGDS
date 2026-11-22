@@ -168,11 +168,12 @@ class ProjectIndex:
         if not q:
             raise ValueError("Symbol search query cannot be empty.")
         limit = max(1, min(int(limit), 100))
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._connect() as db:
             rows = db.execute(
-                "SELECT path,name,kind,line FROM symbols WHERE name LIKE ? ESCAPE '\\' ORDER BY CASE WHEN name=? THEN 0 WHEN name LIKE ? THEN 1 ELSE 2 END,path,line LIMIT ?",
-                (f"%{q.replace('%','\\%').replace('_','\\_')}%", q, f"{q}%", limit)).fetchall()
-        return [{"path": p, "symbol": n, "kind": k, "line": ln} for p,n,k,ln in rows]
+                "SELECT path,name,kind,line FROM symbols WHERE name LIKE ? ESCAPE '\\' ORDER BY CASE WHEN name=? THEN 0 WHEN name LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,path,line LIMIT ?",
+                (f"%{escaped}%", q, f"{escaped}%", limit)).fetchall()
+        return [{"path": p, "symbol": n, "kind": k, "line": ln} for p, n, k, ln in rows
 
     def related_files(self, path: str, limit: int = 20) -> list[dict]:
         rel = Path(path).as_posix()
