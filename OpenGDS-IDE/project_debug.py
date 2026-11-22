@@ -50,6 +50,7 @@ def triage_error(workspace: Path, error_text: str, limit: int = 20) -> dict:
     contexts=[]
     for row in diagnostics[:10]:
         rel=row["path"].replace("\\","/")
+        if rel.startswith("res://"): rel=rel[6:]
         # Only accept paths that resolve inside workspace; normalize absolute paths to workspace-relative.
         candidate=Path(rel)
         if candidate.is_absolute():
