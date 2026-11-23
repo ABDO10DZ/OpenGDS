@@ -244,7 +244,7 @@ The MCP server exposes the six core/file tools `list_project_files`, `read_proje
 
 The MCP server calls the same `OpenGDSBackend` adapter used by the desktop IDE. Decompile returns an in-memory preview; compile validation writes only to a temporary directory and returns the artifact hash. Neither operation changes workspace files. The symbol index is stored in the OS user cache outside the workspace, and index refresh is bounded to 5,000 files and 200 KB per file. Static review is limited to 100 files and 200 findings per request; error text is limited to 100 KB.
 
-MCP intentionally does not expose arbitrary shell execution, arbitrary Python scripts, direct workspace writes, or destructive GUI actions. Discovered build/test commands are never run by MCP. The built-in IDE agent retains its proposal-and-approval workflow for edits and commands. The MCP server is a separate stdio process and controls OpenGDS Core and safe project analysis—not the live GUI; live GUI navigation is available to the built-in assistant through the Qt bridge.
+MCP intentionally does not expose arbitrary shell execution, arbitrary Python scripts, direct workspace writes, or destructive GUI actions. Discovered build/test commands are never run by MCP. The built-in IDE agent retains its proposal-and-approval workflow for edits and commands. The MCP server is a separate stdio process. Live GUI navigation is disabled by default for external clients and can be explicitly enabled for the current session using the authenticated, view-only bridge described below; the built-in assistant uses the Qt bridge directly.
 
 ### MCP resources and prompts
 
