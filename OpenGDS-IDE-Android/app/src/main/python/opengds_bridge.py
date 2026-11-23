@@ -183,13 +183,43 @@ def validate_gdc(path: str) -> str:
 
 def compile_source(source: str, destination: str, compressed: bool = True,
                    tab_size: int = 4, force: bool = False,
-                   bytecode_version: int = 101) -> str:
+                   bytecode_version: int = 101, engine_version: str = "") -> str:
     _check_cancelled()
     core = _core()
     dest = Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and not force:
         raise FileExistsError(f"Output exists (enable 'Replace existing .gd/.gdc outputs' in Settings): {dest}")
+
+    if int(bytecode_version) not in (100, 101):
+        if not engine_version.strip():
+            raise compat.ExternalBytecodeToolRequired(
+                "Legacy compilation requires an exact engine version (for example 3.5.0) and GDRE Tools."
+            )
+        with tempfile.TemporaryDirectory(prefix="opengds-gdre-", dir=str(dest.parent)) as stage_dir:
+            stage = Path(stage_dir)
+            source_file = stage / "source.gd"
+            staged_output = stage / "compiled.gdc"
+            source_file.write_text(source, encoding="utf-8")
+            compat.compile_legacy_file(source_file, staged_output, engine_version.strip())
+            legacy_header = compat.inspect_header(staged_output.read_bytes())
+            if not legacy_header.profile or legacy_header.profile.capability != "gdre":
+                raise compat.GDSCCompatibilityError(
+                    f"GDRE Tools returned an unrecognized bytecode revision {legacy_header.version}"
+                )
+            staged_dest = dest.with_name(dest.name + ".opengds-tmp")
+            try:
+                shutil.copy2(staged_output, staged_dest)
+                os.replace(staged_dest, dest)
+            finally:
+                if staged_dest.exists():
+                    staged_dest.unlink()
+        data = dest.read_bytes()
+        return json.dumps({
+            "path": str(dest), "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data), "tokens": None, "version": legacy_header.version,
+            "engine_version": engine_version.strip(), "compressed": None,
+        })
 
     data = compat.compile_data(source, core, bytecode_version=int(bytecode_version),
                                compressed=bool(compressed), tab_size=int(tab_size))
@@ -335,7 +365,7 @@ def decompile_all(folder: str, force: bool = False, continue_on_error: bool = Tr
 
 def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
                 force: bool = False, continue_on_error: bool = True,
-                bytecode_version: int = 101) -> str:
+                bytecode_version: int = 101, engine_version: str = "") -> str:
     core = _core()
     root = Path(folder)
     if not root.is_dir():
@@ -354,6 +384,29 @@ def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
                 continue
             if target.exists() and force:
                 target.with_name(target.name + ".bak").write_bytes(target.read_bytes())
+            if int(bytecode_version) not in (100, 101):
+                if not engine_version.strip():
+                    raise compat.ExternalBytecodeToolRequired(
+                        "Legacy compilation requires an exact engine version and GDRE Tools."
+                    )
+                with tempfile.TemporaryDirectory(prefix="opengds-gdre-", dir=str(root)) as stage_dir:
+                    staged_output = Path(stage_dir) / "compiled.gdc"
+                    compat.compile_legacy_file(source_file, staged_output, engine_version.strip())
+                    header = compat.inspect_header(staged_output.read_bytes())
+                    if not header.profile or header.profile.capability != "gdre":
+                        raise compat.GDSCCompatibilityError(
+                            f"GDRE Tools returned an unrecognized bytecode revision {header.version}"
+                        )
+                    temp_output = target.with_name(target.name + ".opengds-tmp")
+                    try:
+                        shutil.copy2(staged_output, temp_output)
+                        os.replace(temp_output, target)
+                    finally:
+                        if temp_output.exists():
+                            temp_output.unlink()
+                ok += 1
+                messages.append(f"[OK] {source_file} -> {target} GDSC v{header.version} via Godot {engine_version.strip()}")
+                continue
             data = compat.compile_data(
                 source_file.read_text(encoding="utf-8-sig"), core,
                 bytecode_version=int(bytecode_version),
