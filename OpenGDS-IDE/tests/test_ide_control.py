@@ -1,3 +1,5 @@
+import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -171,8 +173,8 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
                 })
             self.assertEqual(opened, [])
 
-            expected = __import__("hashlib").sha256(
-                __import__("os").path.normcase(str(root.resolve())).encode("utf-8")
+            expected = hashlib.sha256(
+                os.path.normcase(str(root.resolve())).encode("utf-8")
             ).hexdigest()
             result = bridge.call("ide_open_file", {
                 "path": "main.gd",
