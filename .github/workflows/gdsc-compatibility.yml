@@ -105,8 +105,10 @@ jobs:
           set -euo pipefail
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)"
           test -n "$SDKMANAGER"
+          set +o pipefail
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          set -o pipefail
       - name: Compile Android debug Kotlin
         working-directory: OpenGDS-IDE-Android
         run: gradle --no-daemon :app:compileDebugKotlin
