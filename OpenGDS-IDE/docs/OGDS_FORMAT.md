@@ -24,6 +24,7 @@ The default filename created by the IDE is `file.ogds`, but any filename ending 
     "tab_size": 4,
     "bytecode_version": 101,
     "engine_version": "",
+    "engine_version": "",
     "overwrite": false,
     "continue_on_error": true,
     "output_directory": ".opengds/compiled",
@@ -60,7 +61,7 @@ The default filename created by the IDE is `file.ogds`, but any filename ending 
 | `godot_project` | string | Optional path relative to `root`, usually `project.godot`; empty for a plain workspace. |
 | `backend` | string | Optional path to `OpenGDS.py`; empty means use the copy shipped with the IDE. |
 | `godot_executable` | string | Optional Godot executable path; empty means auto-detect or ask. |
-| `compile` | object | GDSC target bytecode (`100`, `101`, or `0` for GDRE legacy), optional exact `engine_version`, compression, tab-size, overwrite/error policy, output directory and optional validation preference. |
+| `compile` | object | GDSC target bytecode (`100`, `101`, or `0` for GDRE/custom), optional exact `engine_version` or commit, compression, tab-size, overwrite/error policy, output directory and optional validation preference. |
 | `debug` | object | OpenGDS runtime-debug, Godot scene/source mapping and static debugger settings. |
 | `editor` | object | Workspace/editor defaults reserved for IDE use. |
 
@@ -70,8 +71,8 @@ Unknown extra JSON fields are retained when loaded/saved. Missing known fields a
 
 - Prefer relative paths for portable workspaces.
 - `root` is resolved relative to the descriptor location.
-- `compile.bytecode_version` selects GDSC v100 (Godot 4.3–4.4) or v101 (Godot 4.5+); v101 is the default. Use `0` for legacy Godot 1.x–3.x compilation via GDRE Tools.
-- `compile.engine_version` supplies the exact GDRE target version (for example `3.5.0`) when `bytecode_version` is `0`; configure `GDRE_TOOLS` or add `gdre_tools` to `PATH`.
+- `compile.bytecode_version` selects GDSC v100 (Godot 4.3–4.4) or v101 (Godot 4.5+); v101 is the default. Use `0` to compile through GDRE Tools for legacy releases or custom engine builds.
+- `compile.engine_version` supplies the exact GDRE target release or commit (for example `3.5.0`, `4.3.0`, or a commit hash) when `bytecode_version` is `0`; configure `GDRE_TOOLS` or add `gdre_tools` to `PATH`.
 - `compile.output_directory` is resolved relative to the workspace root unless it is an absolute path. An absolute output path is useful when compiled artifacts are stored outside the project.
 - `backend` and `godot_executable` can be absolute executable/file paths.
 - `debug.scene` is a Godot resource path such as `res://scenes/main.tscn`.
