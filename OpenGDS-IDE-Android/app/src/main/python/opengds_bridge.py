@@ -273,14 +273,21 @@ def report(mode: str, path: str) -> str:
             f"Tokens: {len(decoded[5])}",
             "Structural validation: " + ("PASS" if not any(x[0] == "ERROR" for x in core.validate_gdc_structure(decoded)) else "FAIL"),
         ])
-    if mode == "audit":
-        return core.audit_report(path, decoded)
-    if mode == "consts":
-        return core.const_report(path, decoded)
-    if mode == "disasm":
-        return core.disasm_report(path, decoded)
-    if mode == "dbg":
-        return core.dbg_report(path, decoded)
+    if mode in ("audit", "consts", "disasm", "dbg"):
+        builders = {
+            "audit": core.audit_report,
+            "consts": core.const_report,
+            "disasm": core.disasm_report,
+            "dbg": core.dbg_report,
+        }
+        result = builders[mode](path, decoded)
+        if header.version != decoded[0]:
+            result = result.replace(
+                f"GDSC version: {decoded[0]}",
+                f"GDSC version: {header.version}",
+                1,
+            )
+        return result
     if mode == "hexdump":
         _h, raw = compat._payload(data, core)
         if header.version == 100:
@@ -296,12 +303,18 @@ def debug(path: str, breakpoint_lines=None, show_tokens: bool = False,
     _check_cancelled()
     core = _core()
     data = Path(path).read_bytes()
-    _header, decoded = compat.decode_compatible(data, core)
+    header, decoded = compat.decode_compatible(data, core)
     _check_cancelled()
     result = core.dbg_report(
         path, decoded, breakpoints=breakpoint_lines or [],
         show_tokens=bool(show_tokens), context=int(context), max_tokens=int(max_tokens)
     )
+    if header.version != decoded[0]:
+        result = result.replace(
+            f"GDSC version: {decoded[0]}",
+            f"GDSC version: {header.version}",
+            1,
+        )
     _check_cancelled()
     return result
 
