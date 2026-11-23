@@ -54,11 +54,15 @@ class BackendBridge {
     fun report(mode: String, path: String): String = module.callAttr("report", mode, path).toString()
     fun decompileAll(folder: String, force: Boolean, continueOnError: Boolean): JSONObject =
         JSONObject(module.callAttr("decompile_all", folder, force, continueOnError).toString())
-    fun compileAll(folder: String, compressed: Boolean, tabSize: Int, force: Boolean, continueOnError: Boolean): JSONObject =
-        JSONObject(module.callAttr("compile_all", folder, compressed, tabSize, force, continueOnError).toString())
+    fun compileAll(folder: String, compressed: Boolean, tabSize: Int, force: Boolean,
+                    continueOnError: Boolean, bytecodeVersion: Int = 101): JSONObject =
+        JSONObject(module.callAttr("compile_all", folder, compressed, tabSize, force,
+            continueOnError, bytecodeVersion).toString())
 
-    fun compile(source: String, output: String, compressed: Boolean, tabSize: Int, force: Boolean): JSONObject {
-        return JSONObject(module.callAttr("compile_source", source, output, compressed, tabSize, force).toString())
+    fun compile(source: String, output: String, compressed: Boolean, tabSize: Int,
+                force: Boolean, bytecodeVersion: Int = 101): JSONObject {
+        return JSONObject(module.callAttr("compile_source", source, output, compressed,
+            tabSize, force, bytecodeVersion).toString())
     }
 }
 
@@ -99,6 +103,8 @@ object SettingsStore {
     fun setCompressed(context: Context, value: Boolean) = prefs(context).edit().putBoolean("compressed", value).apply()
     fun tabSize(context: Context) = prefs(context).getInt("tab_size", 4).coerceIn(1, 8)
     fun setTabSize(context: Context, value: Int) = prefs(context).edit().putInt("tab_size", value.coerceIn(1, 8)).apply()
+    fun bytecodeVersion(context: Context) = prefs(context).getInt("bytecode_version", 101).let { if (it == 100) 100 else 101 }
+    fun setBytecodeVersion(context: Context, value: Int) = prefs(context).edit().putInt("bytecode_version", if (value == 100) 100 else 101).apply()
     fun overwrite(context: Context) = prefs(context).getBoolean("overwrite", false)
     fun setOverwrite(context: Context, value: Boolean) = prefs(context).edit().putBoolean("overwrite", value).apply()
     fun continueOnError(context: Context) = prefs(context).getBoolean("continue_on_error", true)
