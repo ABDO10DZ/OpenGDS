@@ -235,9 +235,16 @@ An MCP client can launch that command over stdio. Example client configuration:
 }
 ```
 
-The MCP server exposes `list_project_files`, `read_project_file`, `search_project_text`, `inspect_gdsc`, `decompile_preview`, and `compile_check`. It calls the same `OpenGDSBackend` adapter used by the desktop IDE. Decompile returns an in-memory preview; compile validation writes only to a temporary directory and returns the artifact hash. Neither operation changes workspace files.
+The MCP server exposes the six core/file tools `list_project_files`, `read_project_file`, `search_project_text`, `inspect_gdsc`, `decompile_preview`, and `compile_check`, plus the same static project-intelligence helpers available to the built-in agent:
 
-MCP intentionally does not expose arbitrary shell execution, arbitrary Python scripts, direct workspace writes, or destructive GUI actions. The built-in IDE agent has richer compile/decompile proposal tools and asks the user to approve resulting changes. The MCP server is a separate stdio process and currently controls OpenGDS Core/project files, not the live GUI; live GUI navigation is available to the built-in assistant through the Qt bridge.
+- **Persistent symbol index:** `refresh_project_index`, `project_index_status`, `search_project_symbols`, `summarize_project_architecture`, `trace_project_symbol`, `related_project_files`, and `estimate_change_impact`. It shares the OS-cache index format with the IDE and stores symbol names, kinds, paths, line numbers, hashes and metadata—not source text.
+- **Static review:** `review_source_file` and bounded `review_workspace`, with common credential/token patterns redacted from returned snippets.
+- **Debugging:** `analyze_project_error` parses pasted diagnostics/stack traces, returns only validated workspace-relative source locations and bounded excerpts, redacts common secrets, and omits external paths.
+- **Validation planning:** `discover_validation_tasks` identifies supported project tasks without executing them; `select_relevant_tests` ranks likely Python tests from an explicit bounded list of changed paths. Both return suggestions only.
+
+The MCP server calls the same `OpenGDSBackend` adapter used by the desktop IDE. Decompile returns an in-memory preview; compile validation writes only to a temporary directory and returns the artifact hash. Neither operation changes workspace files. The symbol index is stored in the OS user cache outside the workspace, and index refresh is bounded to 5,000 files and 200 KB per file. Static review is limited to 100 files and 200 findings per request; error text is limited to 100 KB.
+
+MCP intentionally does not expose arbitrary shell execution, arbitrary Python scripts, direct workspace writes, or destructive GUI actions. Discovered build/test commands are never run by MCP. The built-in IDE agent retains its proposal-and-approval workflow for edits and commands. The MCP server is a separate stdio process and controls OpenGDS Core and safe project analysis—not the live GUI; live GUI navigation is available to the built-in assistant through the Qt bridge.
 
 ## AI assistant
 
