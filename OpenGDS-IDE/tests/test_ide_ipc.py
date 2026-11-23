@@ -149,7 +149,7 @@ class IDEControlIPCTests(unittest.TestCase):
             registry_directory=self.registry.parent / "unavailable",
             keyring_api=UnavailableKeyring(),
         )
-        with self.assertRaisesRegex(RuntimeError, "OS keyring"):
+        with self.assertRaisesRegex(RuntimeError, "operating-system keyring"):
             server.start()
 
     def test_server_does_not_expose_workspace_path(self):
