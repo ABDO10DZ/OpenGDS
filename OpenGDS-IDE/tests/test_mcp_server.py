@@ -246,6 +246,8 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
             "summarize_project_architecture", "trace_project_symbol", "related_project_files",
             "estimate_change_impact", "review_source_file", "review_workspace",
             "analyze_project_error", "discover_validation_tasks", "select_relevant_tests",
+            "ide_get_state", "ide_get_diagnostics", "ide_get_debug_state",
+            "ide_open_file", "ide_go_to_line", "ide_focus_panel",
         }
         self.assertEqual(set(server.tools), expected)
         self.assertEqual(set(server.resources), {
@@ -258,6 +260,22 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
         })
         self.assertIn("never edits workspace files", server.instructions)
         self.assertIn("read-only project resources", server.instructions)
+
+    def test_ide_control_tools_use_only_the_authenticated_navigation_client(self):
+        class FakeIDEClient:
+            def __init__(self):
+                self.calls = []
+            def call(self, name, args):
+                self.calls.append((name, args))
+                return {"action": name, "args": args}
+
+        fake = FakeIDEClient()
+        self.service.ide_client = fake
+        result = self.service.control_ide("ide_open_file", {"path": "main.gd"})
+        self.assertEqual(result["action"], "ide_open_file")
+        self.assertEqual(fake.calls, [("ide_open_file", {"path": "main.gd"})])
+        with self.assertRaises(ValueError):
+            self.service.control_ide("ide_delete_file", {"path": "main.gd"})
 
     def test_workspace_resources_are_bounded_and_validation_is_suggestion_only(self):
         import json
