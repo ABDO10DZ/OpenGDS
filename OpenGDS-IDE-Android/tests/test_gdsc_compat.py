@@ -1,6 +1,9 @@
 from __future__ import annotations
 import struct
 import unittest
+import importlib.util
+import sys
+from pathlib import Path
 import gdsc_compat as compat
 
 class Token:
@@ -73,6 +76,34 @@ def structured_container(version, records, v100=False):
 class GDSCCompatibilityTests(unittest.TestCase):
     def setUp(self):
         self.core = FakeCore()
+
+    def test_real_opengds_core_v101_to_v100_round_trip(self):
+        core_path = Path(__file__).resolve().parents[2] / "OpenGDS-IDE" / "OpenGDS.py"
+        spec = importlib.util.spec_from_file_location("_opengds_real_core_android_test", core_path)
+        self.assertIsNotNone(spec)
+        core = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = core
+        spec.loader.exec_module(core)
+        source = (
+            "extends RefCounted\\n"
+            "const LIMIT := 42\\n"
+            "var total: int = 0\\n"
+            "func add(value: int) -> int:\\n"
+            "    total += value\\n"
+            "    return total\\n"
+        )
+        native = core.compile_gd(source, compress=False, tab_size=4)
+        original = core.decode_gdsc(native)
+        self.assertEqual(101, original[0])
+        encoded = compat.encode_v100(native, core, compressed=False)
+        header, decoded = compat.decode_compatible(encoded, core)
+        self.assertEqual(100, header.version)
+        self.assertEqual(compat._signature(original), compat._signature(decoded))
+        errors = [item for item in core.validate_gdc_structure(decoded) if item[0] == "ERROR"]
+        self.assertEqual([], errors)
+        reconstructed = core.reconstruct(decoded[1], decoded[2], decoded[3], decoded[4], decoded[5])
+        rebuilt = core.decode_gdsc(core.compile_gd(reconstructed, compress=False, tab_size=4))
+        self.assertEqual(compat._signature(original), compat._signature(rebuilt))
 
     def test_version_profiles_cover_old_and_current_families(self):
         versions = {p["version"] for p in compat.supported_profiles()}
