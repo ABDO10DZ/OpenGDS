@@ -301,7 +301,7 @@ The AI agent exposes `project_select_tests`. It reads the current Git change lis
 
 ## Live IDE diagnostics for AI
 
-When the Qt IDE bridge is attached, Ask and Agent modes expose `ide_get_diagnostics`. It reads up to 100 structured entries from the Problems panel, returns workspace-relative file/line/column locations, and redacts common credential assignments and bearer values. It does not read raw log files or arbitrary console text. External or live diagnostics can then be paired with `debug_source_context`, symbol tracing and the existing review/validation workflow. File changes and commands remain approval-gated.
+When the Qt IDE bridge is attached, Ask and Agent modes expose `ide_get_diagnostics`. It reads up to 100 structured entries from the Problems panel, returns workspace-relative file/line/column locations, and redacts named credential assignments, bearer strings, common raw API-key prefixes (OpenAI/GitHub/Google/Slack/AWS), and JWT-shaped values. It does not read raw log files or arbitrary console text. External or live diagnostics can then be paired with `debug_source_context`, symbol tracing and the existing review/validation workflow. File changes and commands remain approval-gated.
 
 
 ## Live Godot debugger context for AI
