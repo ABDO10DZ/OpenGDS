@@ -42,7 +42,7 @@ _SESSION_RE = re.compile(r"^[0-9a-f]{32}$")
 
 def workspace_identity(workspace: str | Path) -> str:
     """Return a stable, non-reversible identifier for a resolved workspace path."""
-    resolved = str(Path(workspace).expanduser().resolve())
+    resolved = os.path.normcase(str(Path(workspace).expanduser().resolve()))
     return hashlib.sha256(resolved.encode("utf-8")).hexdigest()
 
 
@@ -331,13 +331,15 @@ class IDEControlIPCClient:
                 if not isinstance(token, str) or not token:
                     continue
                 state = self._request(registry, token, "ide_get_state", {})
-                if state.get("workspace_id") != expected_workspace:
-                    continue
-                if name == "ide_get_state":
-                    return state
-                return self._request(registry, token, name, args)
             except (OSError, RuntimeError, ValueError, TypeError):
                 continue
+            if state.get("workspace_id") != expected_workspace:
+                continue
+            if name == "ide_get_state":
+                return state
+            # Once the workspace match is authenticated, preserve the IDE's
+            # meaningful validation/UI errors instead of hiding them as discovery failures.
+            return self._request(registry, token, name, args)
         raise RuntimeError(
             "No enabled OpenGDS-IDE instance has this workspace open. In the IDE, enable "
             "Tools → Allow external MCP IDE navigation for the current session."
