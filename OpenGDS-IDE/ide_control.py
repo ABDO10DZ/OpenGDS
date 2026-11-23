@@ -91,12 +91,15 @@ class IDEControlBridge(QObject):
         windows = PureWindowsPath(raw)
         if not raw or candidate.is_absolute() or windows.is_absolute() or windows.drive or ".." in candidate.parts:
             raise ValueError("IDE file navigation accepts workspace-relative paths only.")
-        if any(part.lower() in {".ssh", ".aws", ".azure", ".gnupg", ".secrets"}
-               or part.lower().startswith(".env") or part.lower() in {
+        if any(part.lower() in {
+            ".git", ".ssh", ".aws", ".azure", ".gnupg", ".secrets", ".godot",
+            ".opengds", ".opengds-ide", ".venv", "venv", "node_modules",
+            "__pycache__", "build", "dist", ".tox", ".pytest_cache",
+        } or part.lower().startswith(".env") or part.lower() in {
             "secrets.json", "credentials.json", "credentials.db", "token.json",
-            "id_rsa", "id_ed25519", "authorized_keys", ".npmrc", ".pypirc",
-            ".netrc", ".git-credentials", "auth.json", "service-account.json",
-            "access_token", "refresh_token", ".dockerconfigjson",
+            "id_rsa", "id_ed25519", "known_hosts", "authorized_keys", ".npmrc",
+            ".pypirc", ".netrc", ".git-credentials", "auth.json",
+            "service-account.json", "access_token", "refresh_token", ".dockerconfigjson",
         } or Path(part).suffix.lower() in {".pem", ".key", ".p12", ".pfx", ".keystore", ".cer", ".crt"}
                for part in candidate.parts):
             raise PermissionError("Sensitive files cannot be opened through AI controls.")
