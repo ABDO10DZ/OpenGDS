@@ -90,8 +90,8 @@ class GDSCCompatibilityTests(unittest.TestCase):
 
     def test_v101_to_v100_round_trip_preserves_tokens_and_lines(self):
         data = container(101, [
-            short_token(1, 1), long_token(2, 9, 2),
-            short_token(82, 3), short_token(84, 4), short_token(99, 5)
+            long_token(1, 0, 1), long_token(2, 9, 2),
+            long_token(82, 0, 3), long_token(84, 0, 4), long_token(99, 0, 5)
         ])
         original = self.core.decode_gdsc(data)
         encoded = compat.encode_v100(data, self.core, compressed=False)
