@@ -136,7 +136,7 @@ class IDEControlBridge(QObject):
             cursor = editor.textCursor() if editor else None
             return {
                 "workspace": root.name,
-                "workspace_id": hashlib.sha256(str(root).encode("utf-8")).hexdigest(),
+                "workspace_id": hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest(),
                 "active_file": active_relative,
                 "line": cursor.blockNumber() + 1 if cursor else None,
                 "column": cursor.positionInBlock() + 1 if cursor else None,
