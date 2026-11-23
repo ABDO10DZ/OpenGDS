@@ -217,6 +217,27 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             self.assertEqual(result["opened"], "main.gd")
             self.assertEqual(len(opened), 1)
 
+    def test_ide_file_navigation_blocks_secret_and_metadata_directories(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            window = FakeWindow(root, [])
+            opened = []
+            window.open_path = lambda path: opened.append(path)
+            bridge = IDEControlBridge(window)
+            blocked = (
+                ".git/config",
+                ".GIT/config",
+                ".env.local",
+                ".venv/pyvenv.cfg",
+                ".godot/editor/project_metadata.cfg",
+                "credentials.json",
+                "certs/private.pem",
+            )
+            for path in blocked:
+                with self.subTest(path=path), self.assertRaises(PermissionError):
+                    bridge.call("ide_open_file", {"path": path})
+            self.assertEqual(opened, [])
+
     def test_ide_state_omits_sensitive_and_symlink_open_editor_paths(self):
         class Cursor:
             def blockNumber(self):
