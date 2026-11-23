@@ -69,7 +69,7 @@ def iter_project_files(root: str | Path, suffix: str, *, include_compiled_output
 
 def compile_project(backend, root: str | Path, output_root: str | Path, *, compressed: bool = True,
                     overwrite: bool = False, tab_size: int = 4, continue_on_error: bool = True,
-                    bytecode_version: int = 101) -> OperationSummary:
+                    bytecode_version: int = 101, engine_version: str = "") -> OperationSummary:
     root = Path(root).expanduser().resolve()
     output_root = Path(output_root).expanduser().resolve()
     sources = iter_project_files(root, ".gd")
@@ -84,7 +84,7 @@ def compile_project(backend, root: str | Path, output_root: str | Path, *, compr
             summary.skipped.append((source, f"Output already exists: {target}"))
             continue
         try:
-            backend.compile(source, target, compressed=compressed, overwrite=overwrite, tab_size=tab_size, bytecode_version=bytecode_version)
+            backend.compile(source, target, compressed=compressed, overwrite=overwrite, tab_size=tab_size, bytecode_version=bytecode_version, engine_version=engine_version)
             summary.succeeded.append(target)
         except Exception as exc:
             summary.failed.append((source, str(exc)))
