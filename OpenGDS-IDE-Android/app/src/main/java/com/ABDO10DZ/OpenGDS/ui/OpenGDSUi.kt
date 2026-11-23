@@ -1623,16 +1623,38 @@ private fun SettingsPage(
         Text("Compilation", style = MaterialTheme.typography.titleMedium)
         Text("Target GDSC bytecode", style = MaterialTheme.typography.bodyMedium)
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            listOf(101 to "v101 · Godot 4.5+", 100 to "v100 · Godot 4.3–4.4").forEachIndexed { index, choice ->
+            listOf(
+                101 to "v101",
+                100 to "v100",
+                0 to "Legacy"
+            ).forEachIndexed { index, choice ->
                 SegmentedButton(
                     selected = state.bytecodeVersion == choice.first,
                     onClick = { model.setBytecodeVersion(choice.first) },
-                    shape = SegmentedButtonDefaults.itemShape(index, 2)
+                    shape = SegmentedButtonDefaults.itemShape(index, 3)
                 ) { Text(choice.second) }
             }
         }
         Text(
-            "Godot 1.x–3.x bytecode is detected separately and uses the optional GDRE Tools adapter. The selected target applies to single-file and batch compilation.",
+            when (state.bytecodeVersion) {
+                101 -> "Godot 4.5+ · native OpenGDS compatibility"
+                100 -> "Godot 4.3–4.4 · translated through the v100 adapter"
+                else -> "Godot 1.x–3.x · GDRE Tools required. Enter the exact engine version below."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(
+            value = state.engineVersion,
+            onValueChange = model::setEngineVersion,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Legacy Godot engine version") },
+            placeholder = { Text("e.g. 3.5.0") },
+            enabled = state.bytecodeVersion == 0
+        )
+        Text(
+            "Legacy mode uses the optional GDRE_TOOLS executable or gdre_tools on PATH. The exact engine version is required for compiling older bytecode; single-file, batch, and repack builds use the same target.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
