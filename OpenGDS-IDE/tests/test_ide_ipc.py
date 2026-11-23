@@ -111,6 +111,9 @@ class IDEControlIPCTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "No enabled OpenGDS-IDE"):
             other.call("ide_get_state")
+        with self.assertRaisesRegex(RuntimeError, "No enabled OpenGDS-IDE"):
+            other.call("ide_open_file", {"path": "main.gd"})
+        self.assertEqual(self.bridge.calls, [])
 
     def test_client_and_server_reject_non_allowlisted_actions(self):
         self.assertEqual(len(IDE_CONTROL_ACTIONS), 6)
