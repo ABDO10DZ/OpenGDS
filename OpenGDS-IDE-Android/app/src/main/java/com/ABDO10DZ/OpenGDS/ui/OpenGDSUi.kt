@@ -1626,7 +1626,7 @@ private fun SettingsPage(
             listOf(
                 101 to "v101",
                 100 to "v100",
-                0 to "Legacy"
+                0 to "GDRE"
             ).forEachIndexed { index, choice ->
                 SegmentedButton(
                     selected = state.bytecodeVersion == choice.first,
@@ -1639,7 +1639,7 @@ private fun SettingsPage(
             when (state.bytecodeVersion) {
                 101 -> "Godot 4.5+ · native OpenGDS compatibility"
                 100 -> "Godot 4.3–4.4 · translated through the v100 adapter"
-                else -> "Godot 1.x–3.x · GDRE Tools required. Enter the exact engine version below."
+                else -> "GDRE Tools · exact engine release or commit below; supports legacy and custom targets."
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1649,12 +1649,12 @@ private fun SettingsPage(
             onValueChange = model::setEngineVersion,
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            label = { Text("Legacy Godot engine version") },
-            placeholder = { Text("e.g. 3.5.0") },
+            label = { Text("GDRE engine version or commit") },
+            placeholder = { Text("e.g. 3.5.0, 4.3.0, or commit hash") },
             enabled = state.bytecodeVersion == 0
         )
         Text(
-            "Legacy mode uses the optional GDRE_TOOLS executable or gdre_tools on PATH. The exact engine version is required for compiling older bytecode; single-file, batch, and repack builds use the same target.",
+            "GDRE mode uses the optional GDRE_TOOLS executable or gdre_tools on PATH. Enter an exact engine release or commit for legacy and custom builds; single-file, batch, and repack builds use the same target.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
