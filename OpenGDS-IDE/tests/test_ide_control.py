@@ -154,6 +154,33 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             self.assertFalse(disconnected["connected"])
             self.assertEqual(disconnected["call_stack"], [])
 
+    def test_ide_action_checks_expected_workspace_before_navigation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "main.gd"
+            source.write_text("extends Node\\n", encoding="utf-8")
+            window = FakeWindow(root, [])
+            opened = []
+            window.open_path = lambda path: opened.append(path)
+            bridge = IDEControlBridge(window)
+
+            with self.assertRaisesRegex(RuntimeError, "Workspace identity mismatch"):
+                bridge.call("ide_open_file", {
+                    "path": "main.gd",
+                    "_expected_workspace_id": "0" * 64,
+                })
+            self.assertEqual(opened, [])
+
+            expected = __import__("hashlib").sha256(
+                __import__("os").path.normcase(str(root.resolve())).encode("utf-8")
+            ).hexdigest()
+            result = bridge.call("ide_open_file", {
+                "path": "main.gd",
+                "_expected_workspace_id": expected,
+            })
+            self.assertEqual(result["opened"], "main.gd")
+            self.assertEqual(len(opened), 1)
+
     def test_ide_state_omits_sensitive_and_symlink_open_editor_paths(self):
         class Cursor:
             def blockNumber(self):
