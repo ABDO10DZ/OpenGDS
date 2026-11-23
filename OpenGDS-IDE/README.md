@@ -260,6 +260,19 @@ Four reusable MCP prompts guide common workflows: `analyze_gdsc(path)`, `debug_p
 
 Resources expose bounded summaries, not arbitrary file reads. All resource and prompt behavior preserves the MCP server's read-only workspace policy; the only generated compile artifact remains temporary and outside the workspace.
 
+### Optional external MCP control of the live IDE
+
+The stdio MCP server can optionally navigate a running OpenGDS-IDE window. In the GUI, open **Tools → Allow external MCP IDE navigation (local, view-only; this session)** and enable it for the current session. This setting is off by default and is automatically disabled when the IDE closes.
+
+When enabled, the MCP server adds six tools:
+
+- `ide_get_state`, `ide_get_diagnostics`, and `ide_get_debug_state` read bounded editor, Problems-panel and Godot debugger metadata.
+- `ide_open_file`, `ide_go_to_line`, and `ide_focus_panel` perform allow-listed navigation and panel visibility actions.
+
+The IPC endpoint binds only to `127.0.0.1`. A random per-session token is held in the operating-system keyring; the local discovery file contains endpoint metadata only, not the token. The client authenticates the endpoint and checks a non-reversible workspace identity before forwarding a request. Requests are size-limited and restricted to the six view/navigation actions; the existing IDE bridge marshals GUI work onto Qt's thread and applies its workspace path, symlink and sensitive-file checks.
+
+No file edit, delete, shell command, arbitrary Python execution, Godot debugger stepping/continue/stop, or other execution-control API is exposed through this bridge. A client must use the same OS user/keyring and have the matching project open in the IDE. If the OS keyring is unavailable, the bridge remains disabled. Install the optional server dependencies (including `keyring`) using `python -m pip install -r requirements-mcp.txt`.
+
 ## AI assistant
 
 The AI assistant is a detachable, closable native dock with explicit Ask/Agent modes and three focus scopes: **GDScript & Godot** (default), **OpenGDS core**, and **General coding**. The selected focus constrains the files the agent can list, read, search, and propose edits for; an active editor buffer outside the selected focus is excluded.
