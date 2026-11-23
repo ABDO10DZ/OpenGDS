@@ -363,5 +363,53 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
                 prompts[prompt](argument)
 
 
+    def test_real_fastmcp_accepts_resource_and_prompt_registrations(self):
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except ImportError:
+            self.skipTest("Optional MCP SDK is not installed in this test environment")
+        server = build_server(self.service)
+        self.assertIsInstance(server, FastMCP)
+
+    def test_validation_prompt_rejects_workspace_root(self):
+        import sys
+        import types
+
+        class CaptureServer:
+            def __init__(self, name, instructions=""):
+                self.tools, self.resources, self.prompts = {}, {}, {}
+            def tool(self):
+                def register(fn):
+                    self.tools[fn.__name__] = fn
+                    return fn
+                return register
+            def resource(self, uri):
+                def register(fn):
+                    self.resources[uri] = fn
+                    return fn
+                return register
+            def prompt(self):
+                def register(fn):
+                    self.prompts[fn.__name__] = fn
+                    return fn
+                return register
+
+        mcp_module = types.ModuleType("mcp")
+        mcp_module.__path__ = []
+        server_module = types.ModuleType("mcp.server")
+        server_module.__path__ = []
+        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = CaptureServer
+        with patch.dict(sys.modules, {
+            "mcp": mcp_module,
+            "mcp.server": server_module,
+            "mcp.server.fastmcp": fastmcp_module,
+        }):
+            server = build_server(self.service)
+        with self.assertRaises(ValueError):
+            server.prompts["plan_validation"](".")
+
+
+
 if __name__ == "__main__":
     unittest.main()
