@@ -10,6 +10,7 @@ import importlib.util
 import importlib.machinery
 import json
 import os
+import shutil
 import struct
 import tempfile
 import traceback
