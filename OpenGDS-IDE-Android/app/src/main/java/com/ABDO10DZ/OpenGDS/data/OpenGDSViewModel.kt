@@ -108,6 +108,7 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
         theme = SettingsStore.theme(getApplication()),
         compressed = SettingsStore.compressed(getApplication()),
         tabSize = SettingsStore.tabSize(getApplication()),
+        bytecodeVersion = SettingsStore.bytecodeVersion(getApplication()),
         overwrite = SettingsStore.overwrite(getApplication()),
         continueOnError = SettingsStore.continueOnError(getApplication()),
         outputDirectoryConfigured = SettingsStore.outputTreeUri(getApplication()) != null,
@@ -1212,7 +1213,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                         SettingsStore.compressed(getApplication()),
                         SettingsStore.tabSize(getApplication()),
                         true,
-                        false
+                        false,
+                        SettingsStore.bytecodeVersion(getApplication())
                     )
                     val messages = compiled.optJSONArray("messages")
                     if (messages != null) for (i in 0 until messages.length()) LogStore.core(messages.optString(i))
