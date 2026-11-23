@@ -118,6 +118,24 @@ class IDEControlIPCTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not allow-listed"):
             IDEControlIPCClient._request(registry, token, "ide_delete_file", {"path": "main.gd"})
 
+    def test_server_rejects_invalid_action_arguments(self):
+        registry = self.client._registries()[0]
+        token = self.keyring.get_password(KEYRING_SERVICE, registry["key_id"])
+        for args in ({"path": 42}, {"path": "main.gd", "extra": "ignored"}):
+            with self.subTest(args=args), self.assertRaisesRegex(RuntimeError, "Invalid IDE action arguments"):
+                IDEControlIPCClient._request(registry, token, "ide_open_file", args)
+        with self.assertRaisesRegex(RuntimeError, "Invalid IDE line number"):
+            IDEControlIPCClient._request(registry, token, "ide_go_to_line", {"line": True})
+        with self.assertRaisesRegex(RuntimeError, "Invalid IDE editor column"):
+            IDEControlIPCClient._request(registry, token, "ide_go_to_line", {"line": 1, "column": -1})
+
+    def test_client_rejects_non_string_actions_and_non_object_arguments(self):
+        for name in (None, [], "ide_delete_file"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.client.call(name)
+        with self.assertRaises(TypeError):
+            self.client.call("ide_get_state", ["not", "an", "object"])
+
     def test_server_rejects_invalid_token(self):
         registry = self.client._registries()[0]
         payload = json.dumps({
