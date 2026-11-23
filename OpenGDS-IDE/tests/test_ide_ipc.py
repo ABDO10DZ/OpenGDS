@@ -38,6 +38,10 @@ class FakeBridge:
         self.calls = []
 
     def call(self, name, args):
+        args = dict(args)
+        expected_workspace_id = args.pop("_expected_workspace_id", None)
+        if expected_workspace_id and expected_workspace_id != workspace_identity(self.workspace):
+            raise RuntimeError("Workspace identity mismatch; the active IDE project has changed.")
         self.calls.append((name, dict(args)))
         if name == "ide_get_state":
             return {
@@ -116,18 +120,18 @@ class IDEControlIPCTests(unittest.TestCase):
         registry = self.client._registries()[0]
         token = self.keyring.get_password(KEYRING_SERVICE, registry["key_id"])
         with self.assertRaisesRegex(RuntimeError, "not allow-listed"):
-            IDEControlIPCClient._request(registry, token, "ide_delete_file", {"path": "main.gd"})
+            IDEControlIPCClient._request(registry, token, workspace_identity(self.root), "ide_delete_file", {"path": "main.gd"})
 
     def test_server_rejects_invalid_action_arguments(self):
         registry = self.client._registries()[0]
         token = self.keyring.get_password(KEYRING_SERVICE, registry["key_id"])
         for args in ({"path": 42}, {"path": "main.gd", "extra": "ignored"}):
             with self.subTest(args=args), self.assertRaisesRegex(RuntimeError, "Invalid IDE action arguments"):
-                IDEControlIPCClient._request(registry, token, "ide_open_file", args)
+                IDEControlIPCClient._request(registry, token, workspace_identity(self.root), "ide_open_file", args)
         with self.assertRaisesRegex(RuntimeError, "Invalid IDE line number"):
-            IDEControlIPCClient._request(registry, token, "ide_go_to_line", {"line": True})
+            IDEControlIPCClient._request(registry, token, workspace_identity(self.root), "ide_go_to_line", {"line": True})
         with self.assertRaisesRegex(RuntimeError, "Invalid IDE editor column"):
-            IDEControlIPCClient._request(registry, token, "ide_go_to_line", {"line": 1, "column": -1})
+            IDEControlIPCClient._request(registry, token, workspace_identity(self.root), "ide_go_to_line", {"line": 1, "column": -1})
 
     def test_client_rejects_non_string_actions_and_non_object_arguments(self):
         for name in (None, [], "ide_delete_file"):
@@ -140,6 +144,7 @@ class IDEControlIPCTests(unittest.TestCase):
         registry = self.client._registries()[0]
         payload = json.dumps({
             "token": "wrong-token",
+            "workspace_id": workspace_identity(self.root),
             "name": "ide_get_state",
             "args": {},
         }).encode("utf-8") + b"\n"
