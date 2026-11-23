@@ -1257,6 +1257,8 @@ class MainWindow(QMainWindow):
         """Start or stop the explicitly enabled, local-only MCP navigation bridge."""
         if enabled:
             try:
+                if not self.project_root():
+                    raise RuntimeError("Open a project before enabling external MCP IDE navigation.")
                 server = IDEControlIPCServer(self.ide_control)
                 details = server.start()
             except Exception as exc:
@@ -3557,8 +3559,13 @@ class MainWindow(QMainWindow):
                         event.ignore()
                         return
         if self.ide_control_ipc is not None:
-            self.ide_control_ipc.stop()
+            server = self.ide_control_ipc
             self.ide_control_ipc = None
+            try:
+                server.stop()
+            except Exception as exc:
+                self.log(f"Could not cleanly stop external MCP navigation: {exc}",
+                         category="AI", level=logging.WARNING)
             if hasattr(self, "external_mcp_gui_action"):
                 self.external_mcp_gui_action.blockSignals(True)
                 self.external_mcp_gui_action.setChecked(False)
