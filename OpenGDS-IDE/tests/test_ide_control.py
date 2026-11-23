@@ -6,7 +6,8 @@ import time
 import unittest
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
 from PySide6.QtNetwork import QAbstractSocket
 from types import SimpleNamespace
 
@@ -159,7 +160,7 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             self.assertEqual(disconnected["call_stack"], [])
 
     def test_worker_navigation_is_dispatched_on_the_qt_thread(self):
-        application = QCoreApplication.instance() or QCoreApplication([])
+        application = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             source = root / "main.gd"
