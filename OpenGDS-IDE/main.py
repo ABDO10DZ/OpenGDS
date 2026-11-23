@@ -607,8 +607,12 @@ class SettingsDialog(QDialog):
         self.compile_bytecode_version = QComboBox()
         self.compile_bytecode_version.addItem("GDSC v101 — Godot 4.5+", 101)
         self.compile_bytecode_version.addItem("GDSC v100 — Godot 4.3–4.4", 100)
-        target_version = 100 if int(project.get("compile", {}).get("bytecode_version", 101)) == 100 else 101
+        self.compile_bytecode_version.addItem("Legacy — GDRE Tools", 0)
+        target_version = int(project.get("compile", {}).get("bytecode_version", 101))
+        if target_version not in (0, 100, 101): target_version = 101
         self.compile_bytecode_version.setCurrentIndex(max(0, self.compile_bytecode_version.findData(target_version)))
+        self.compile_engine_version = QLineEdit(str(project.get("compile", {}).get("engine_version", "")))
+        self.compile_engine_version.setPlaceholderText("Required for legacy, e.g. 3.5.0")
         self.compressed = QCheckBox("Compress compiled GDSC output"); self.compressed.setChecked(project.get("compile", {}).get("compressed", True))
         self.overwrite = QCheckBox("Allow overwriting compiled output"); self.overwrite.setChecked(project.get("compile", {}).get("overwrite", False))
         self.continue_error = QCheckBox("Continue compiling other files after an error"); self.continue_error.setChecked(project.get("compile", {}).get("continue_on_error", True))
@@ -616,9 +620,10 @@ class SettingsDialog(QDialog):
         self.validate_after_compile = QCheckBox("Offer Godot --check-only validation after project compilation")
         self.validate_after_compile.setChecked(project.get("compile", {}).get("validate_with_godot", True))
         cf.addRow("Target bytecode", self.compile_bytecode_version)
+        cf.addRow("Legacy engine version", self.compile_engine_version)
         cf.addRow("Tokenizer tab size", self.compile_tab_size); cf.addRow(self.compressed); cf.addRow(self.overwrite); cf.addRow(self.continue_error)
         cf.addRow("Project output directory", self.compile_output); cf.addRow(self.validate_after_compile)
-        compile_note = QLabel("v101 targets Godot 4.5+; v100 targets Godot 4.3–4.4. Godot 1.x–3.x revisions are recognized and routed to the optional GDRE Tools adapter. Godot --check-only performs engine parser/type validation.")
+        compile_note = QLabel("v101 targets Godot 4.5+; v100 targets Godot 4.3–4.4. Select Legacy — GDRE Tools and enter the exact engine version (for example 3.5.0) to compile Godot 1.x–3.x bytecode. Install GDRE Tools and configure GDRE_TOOLS or PATH. Godot --check-only performs engine parser/type validation.")
         compile_note.setWordWrap(True); cf.addRow(compile_note)
         tabs.addTab(compiler, "Compiler")
 
@@ -673,7 +678,8 @@ class SettingsDialog(QDialog):
         self.project.setdefault("compile", {}).update({
             "compressed": self.compressed.isChecked(), "overwrite": self.overwrite.isChecked(),
             "continue_on_error": self.continue_error.isChecked(), "tab_size": self.compile_tab_size.value(),
-            "bytecode_version": int(self.compile_bytecode_version.currentData() or 101),
+            "bytecode_version": int(self.compile_bytecode_version.currentData()),
+            "engine_version": self.compile_engine_version.text().strip(),
             "output_directory": self.compile_output.text().strip() or ".opengds/compiled",
             "validate_with_godot": self.validate_after_compile.isChecked(),
         })
@@ -2762,7 +2768,8 @@ class MainWindow(QMainWindow):
             "overwrite": bool(cfg.get("overwrite", False)),
             "continue_on_error": bool(cfg.get("continue_on_error", True)),
             "tab_size": int(cfg.get("tab_size", 4)),
-            "bytecode_version": 100 if int(cfg.get("bytecode_version", 101)) == 100 else 101,
+            "bytecode_version": int(cfg.get("bytecode_version", 101)) if int(cfg.get("bytecode_version", 101)) in (0, 100, 101) else 101,
+            "engine_version": str(cfg.get("engine_version", "")).strip(),
             "validate_with_godot": bool(cfg.get("validate_with_godot", True)),
         }
 
@@ -2814,7 +2821,8 @@ class MainWindow(QMainWindow):
             def work():
                 return backend.compile(source, output, compressed=cfg["compressed"], overwrite=overwrite,
                                        tab_size=cfg["tab_size"], continue_on_error=cfg["continue_on_error"],
-                                       bytecode_version=cfg["bytecode_version"])
+                                       bytecode_version=cfg["bytecode_version"],
+                                       engine_version=cfg["engine_version"])
             def completed(result):
                 self.log(result.stdout or f"Compiled {source} → {output}", category="GDSCRIPT")
                 self.show_report_tab(f"Compile — {source.name}", result.stdout or f"Compiled successfully:\n{output}", source)
@@ -2888,7 +2896,8 @@ class MainWindow(QMainWindow):
             return compile_project(backend, root, output_root,
                 compressed=cfg["compressed"], overwrite=cfg["overwrite"],
                 tab_size=cfg["tab_size"], continue_on_error=cfg["continue_on_error"],
-                bytecode_version=cfg["bytecode_version"])
+                bytecode_version=cfg["bytecode_version"],
+                engine_version=cfg["engine_version"])
         def completed(summary):
             self.show_operation_summary(summary)
             if summary.succeeded and not summary.failed and cfg.get("validate_with_godot", False) and (Path(root) / "project.godot").is_file():
