@@ -55,18 +55,18 @@ class OpenGDSMCPService:
     def _redact_text(value: object) -> str:
         text = str(value or "")[:2000]
         text = re.sub(
-            r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\\s*[:=]\\s*[^\\s,;]+",
-            r"\\1=[REDACTED]", text,
+            r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\s*[:=]\s*[^\s,;]+",
+            r"\1=[REDACTED]", text,
         )
-        text = re.sub(r"(?i)bearer\\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", text)
+        text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", text)
         text = re.sub(
-            r"(?i)\\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|"
+            r"(?i)\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|"
             r"gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|"
-            r"AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16})\\b",
+            r"AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16})\b",
             "[REDACTED]", text,
         )
         return re.sub(
-            r"\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+            r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
             "[REDACTED]", text,
         )
 
@@ -78,10 +78,10 @@ class OpenGDSMCPService:
         return self._project_index
 
     def _report_path(self, value: object) -> str | None:
-        raw = str(value or "").strip().replace("\\\\", "/")
+        raw = str(value or "").strip().replace("\\", "/")
         if raw.startswith("res://"):
             raw = raw[6:]
-        if not raw or "\\x00" in raw:
+        if not raw or "\x00" in raw:
             return None
         candidate = Path(raw).expanduser()
         if candidate.is_absolute():
