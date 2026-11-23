@@ -79,19 +79,19 @@ class GDSCCompatibilityTests(unittest.TestCase):
 
     def test_real_opengds_core_v101_to_v100_round_trip(self):
         core_path = Path(__file__).resolve().parents[1] / "OpenGDS.py"
+        sys.path.insert(0, str(core_path.parent))
         spec = importlib.util.spec_from_file_location("_opengds_real_core_desktop_test", core_path)
         self.assertIsNotNone(spec)
         core = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = core
         spec.loader.exec_module(core)
-        source = (
-            "extends RefCounted\\n"
-            "const LIMIT := 42\\n"
-            "var total: int = 0\\n"
-            "func add(value: int) -> int:\\n"
-            "    total += value\\n"
-            "    return total\\n"
-        )
+        source = """extends RefCounted
+const LIMIT := 42
+var total: int = 0
+func add(value: int) -> int:
+    total += value
+    return total
+"""
         native = core.compile_gd(source, compress=False, tab_size=4)
         original = core.decode_gdsc(native)
         self.assertEqual(101, original[0])
