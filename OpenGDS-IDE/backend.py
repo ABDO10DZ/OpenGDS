@@ -270,9 +270,9 @@ class OpenGDSBackend:
                 staged = Path(stage_dir) / "compiled.gdc"
                 compat.compile_legacy_file(source_path, staged, engine_version.strip(), timeout=self.default_timeout)
                 header = compat.inspect_header(staged.read_bytes())
-                if not header.profile or header.profile.capability != "gdre":
+                if not header.profile:
                     raise compat.GDSCCompatibilityError(
-                        f"GDRE Tools output revision {header.version} is not a recognized legacy GDSC version."
+                        f"GDRE Tools output revision {header.version} is unknown to this OpenGDS build."
                     )
                 os.replace(staged, target)
             message = (
