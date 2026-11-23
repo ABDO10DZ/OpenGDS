@@ -44,6 +44,34 @@ jobs:
           PYTHONPATH: ${{ matrix.python_path }}
         run: python -m unittest discover -s tests -p "test_gdsc_compat.py" -v
 
+      - name: Verify real Godot 4.3 GDSC v100 file with GDRE Tools
+        if: matrix.ide == 'OpenGDS-IDE'
+        working-directory: OpenGDS-IDE
+        run: |
+          mkdir -p "$RUNNER_TEMP/gdre" "$RUNNER_TEMP/real-v100/out"
+          curl --retry 3 --retry-delay 2 -L --fail \
+            "https://github.com/GDRETools/gdsdecomp/releases/download/v2.7.4/GDRE_tools-v2.7.4-linux.zip" \
+            -o "$RUNNER_TEMP/gdre/gdre.zip"
+          unzip -q "$RUNNER_TEMP/gdre/gdre.zip" -d "$RUNNER_TEMP/gdre"
+          GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f \\( -iname 'gdre_tools*' -o -iname 'GDRE_tools*' \\) | head -n 1)"
+          test -n "$GDRE_BIN"
+          chmod +x "$GDRE_BIN"
+          cat > "$RUNNER_TEMP/real-v100/main.gd" <<'GDSCRIPT'
+          extends RefCounted
+          const LIMIT := 42
+          var total: int = 0
+          func add(value: int) -> int:
+              total += value
+              return total
+          GDSCRIPT
+          "$GDRE_BIN" --headless \
+            --compile="$RUNNER_TEMP/real-v100/main.gd" \
+            --bytecode=4.3.0 \
+            --output="$RUNNER_TEMP/real-v100/out"
+          REAL_GDC="$(find "$RUNNER_TEMP/real-v100/out" -type f -name '*.gdc' | head -n 1)"
+          test -n "$REAL_GDC"
+          python tests/verify_real_gdsc.py "$REAL_GDC"
+
   android-compile:
     name: Android Kotlin/Gradle compile
     runs-on: ubuntu-latest
