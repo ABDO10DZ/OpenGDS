@@ -217,6 +217,8 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
         server_module.__path__ = []
         fastmcp_module = types.ModuleType("mcp.server.fastmcp")
         fastmcp_module.FastMCP = FakeFastMCP
+        mcp_module.server = server_module
+        server_module.fastmcp = fastmcp_module
         with patch.dict(sys.modules, {
             "mcp": mcp_module,
             "mcp.server": server_module,
