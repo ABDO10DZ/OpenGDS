@@ -154,6 +154,49 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             self.assertFalse(disconnected["connected"])
             self.assertEqual(disconnected["call_stack"], [])
 
+    def test_ide_state_omits_sensitive_and_symlink_open_editor_paths(self):
+        class Cursor:
+            def blockNumber(self):
+                return 2
+            def positionInBlock(self):
+                return 4
+
+        class Editor:
+            def __init__(self, path):
+                self.file_path = path
+            def textCursor(self):
+                return Cursor()
+
+        class Tabs:
+            def __init__(self, widgets):
+                self.widgets = widgets
+            def count(self):
+                return len(self.widgets)
+            def widget(self, index):
+                return self.widgets[index]
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            safe = root / "main.gd"
+            secret = root / "credentials.json"
+            safe.write_text("extends Node\\n", encoding="utf-8")
+            secret.write_text("{}", encoding="utf-8")
+            linked = root / "linked.gd"
+            try:
+                linked.symlink_to(safe)
+            except OSError:
+                pass
+
+            window = FakeWindow(root, [])
+            window.current_editor = lambda: Editor(secret)
+            window.tabs = Tabs([Editor(safe), Editor(secret), Editor(linked)])
+            result = IDEControlBridge(window).call("ide_get_state")
+
+            self.assertIsNone(result["active_file"])
+            self.assertEqual(result["open_files"], ["main.gd"])
+            self.assertNotIn("credentials.json", str(result))
+            self.assertNotIn("linked.gd", str(result))
+
     def test_caps_returned_diagnostics_to_one_hundred(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
