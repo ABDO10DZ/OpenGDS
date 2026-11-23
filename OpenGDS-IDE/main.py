@@ -1287,7 +1287,11 @@ class MainWindow(QMainWindow):
         server = self.ide_control_ipc
         self.ide_control_ipc = None
         if server is not None:
-            server.stop()
+            try:
+                server.stop()
+            except Exception as exc:
+                self.log(f"Could not cleanly stop external MCP navigation: {exc}",
+                         category="AI", level=logging.WARNING)
             self.log("External MCP IDE navigation disabled", category="AI")
             self.statusBar().showMessage("External MCP navigation disabled", 5000)
 
