@@ -70,6 +70,7 @@ data class OpenGDSState(
     val theme: String = "system",
     val compressed: Boolean = true,
     val tabSize: Int = 4,
+    val bytecodeVersion: Int = 101,
     val overwrite: Boolean = false,
     val continueOnError: Boolean = true,
     val outputDirectoryConfigured: Boolean = false,
@@ -487,6 +488,11 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
     fun setTheme(value: String) { SettingsStore.setTheme(getApplication(), value); mutate { copy(theme = value) } }
     fun setCompressed(value: Boolean) { SettingsStore.setCompressed(getApplication(), value); mutate { copy(compressed = value) } }
     fun setTabSize(value: Int) { SettingsStore.setTabSize(getApplication(), value); mutate { copy(tabSize = value) } }
+    fun setBytecodeVersion(value: Int) {
+        val safe = if (value == 100) 100 else 101
+        SettingsStore.setBytecodeVersion(getApplication(), safe)
+        mutate { copy(bytecodeVersion = safe) }
+    }
     fun setOverwrite(value: Boolean) { SettingsStore.setOverwrite(getApplication(), value); mutate { copy(overwrite = value) } }
     fun setContinueOnError(value: Boolean) { SettingsStore.setContinueOnError(getApplication(), value); mutate { copy(continueOnError = value) } }
     fun setAlwaysUnsignedOutput(value: Boolean) {
@@ -1120,7 +1126,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                 if (target.exists() && !overwrite) throw IllegalStateException("${target.name} already exists. enable 'Replace existing .gd/.gdc outputs' in Settings to replace it.")
                 if (target.exists()) File(target.absolutePath + ".bak").writeBytes(target.readBytes())
                 val result = backend.compile(current.editorText, target.absolutePath,
-                    SettingsStore.compressed(getApplication()), SettingsStore.tabSize(getApplication()), overwrite)
+                    SettingsStore.compressed(getApplication()), SettingsStore.tabSize(getApplication()),
+                    overwrite, SettingsStore.bytecodeVersion(getApplication()))
                 LogStore.core("Compiled ${file.relativePath} -> ${target.name}; ${result.optInt("tokens")} tokens; ${result.optString("sha256")}.")
                 withContext(Dispatchers.Main) {
                     mutate {
@@ -1370,7 +1377,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                     SettingsStore.compressed(getApplication()),
                     SettingsStore.tabSize(getApplication()),
                     force,
-                    SettingsStore.continueOnError(getApplication())
+                    SettingsStore.continueOnError(getApplication()),
+                    SettingsStore.bytecodeVersion(getApplication())
                 )
                 val messages = result.optJSONArray("messages")
                 if (messages != null) for (i in 0 until messages.length()) LogStore.core(messages.optString(i))
