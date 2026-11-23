@@ -127,6 +127,14 @@ class IDEControlBridge(QObject):
             return None
 
     def _execute(self, name: str, args: dict) -> dict:
+        expected_workspace_id = args.pop("_expected_workspace_id", None)
+        if expected_workspace_id is not None:
+            if not isinstance(expected_workspace_id, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_workspace_id):
+                raise ValueError("Invalid expected workspace identity.")
+            root = self._workspace()
+            actual_workspace_id = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
+            if actual_workspace_id != expected_workspace_id:
+                raise RuntimeError("Workspace identity mismatch; the active IDE project has changed.")
         window = self.window
         if name == "ide_get_state":
             root = self._workspace()
