@@ -15,21 +15,37 @@ class FakeCore:
         if struct.unpack_from("<I", data, 8)[0]:
             raise ValueError("test fixture must be uncompressed")
         raw = data[12:]
-        ids, constants, lines, count = struct.unpack_from("<4I", raw)
-        if ids or constants or lines:
-            raise ValueError("token-only fixture expected")
-        pos, tokens = 16, []
-        for _ in range(count):
+        id_count, constant_count, line_count, token_count = struct.unpack_from("<4I", raw)
+        pos, identifiers, constants = 16, [], []
+        for _ in range(id_count):
+            length = struct.unpack_from("<I", raw, pos)[0]
+            pos += 4
+            identifiers.append(raw[pos:pos + length * 4])
+            pos += length * 4
+        for _ in range(constant_count):
+            value, pos = FakeCore.read_variant(raw, pos)
+            constants.append(value)
+        line_map, column_map = {}, {}
+        for _ in range(line_count):
+            key, value = struct.unpack_from("<II", raw, pos)
+            pos += 8
+            line_map[key] = value
+        for _ in range(line_count):
+            key, value = struct.unpack_from("<II", raw, pos)
+            pos += 8
+            column_map[key] = value
+        tokens = []
+        for _ in range(token_count):
             word, line = struct.unpack_from("<II", raw, pos)
             pos += 8
             tokens.append(Token(word & 0x7f, word >> 8, line))
         if pos != len(raw):
             raise ValueError("trailing bytes")
-        return 101, [], [], {}, {}, tokens
+        return 101, identifiers, constants, line_map, column_map, tokens
 
     @staticmethod
     def read_variant(raw, pos):
-        raise AssertionError("no constants in fixture")
+        return struct.unpack_from("<I", raw, pos)[0], pos + 4
 
 def short_token(typ, line):
     return bytes([typ]) + struct.pack("<I", line)
@@ -41,6 +57,18 @@ def container(version, records, v100=False):
     meta = (struct.pack("<5I", 0, 0, 0, 0, len(records)) if v100
             else struct.pack("<4I", 0, 0, 0, len(records)))
     return b"GDSC" + struct.pack("<II", version, 0) + meta + b"".join(records)
+
+def structured_container(version, records, v100=False):
+    identifier = struct.pack("<I", 1) + struct.pack("<I", 0x41424344)
+    constant = struct.pack("<I", 0x12345678)
+    line_map = struct.pack("<4I", 1, 10, 2, 20)
+    column_map = struct.pack("<4I", 1, 4, 2, 8)
+    if v100:
+        meta = struct.pack("<5I", 1, 1, 2, 0, len(records))
+    else:
+        meta = struct.pack("<4I", 1, 1, 2, len(records))
+    raw = meta + identifier + constant + line_map + column_map + b"".join(records)
+    return b"GDSC" + struct.pack("<II", version, 0) + raw
 
 class GDSCCompatibilityTests(unittest.TestCase):
     def setUp(self):
@@ -71,6 +99,19 @@ class GDSCCompatibilityTests(unittest.TestCase):
         ], True)
         _header, decoded = compat.decode_compatible(data, self.core)
         self.assertEqual([(1, 0, 1), (2, 7, 2), (84, 0, 3)],
+                         [(t.typ, t.arg, t.line) for t in decoded[5]])
+
+    def test_v100_preserves_identifier_constants_and_source_maps(self):
+        data = structured_container(100, [
+            short_token(83, 1), long_token(4, 12, 2)
+        ], v100=True)
+        header, decoded = compat.decode_compatible(data, self.core)
+        self.assertEqual(100, header.version)
+        self.assertEqual([struct.pack("<I", 0x41424344)], decoded[1])
+        self.assertEqual([0x12345678], decoded[2])
+        self.assertEqual({1: 10, 2: 20}, decoded[3])
+        self.assertEqual({1: 4, 2: 8}, decoded[4])
+        self.assertEqual([(84, 0, 1), (4, 12, 2)],
                          [(t.typ, t.arg, t.line) for t in decoded[5]])
 
     def test_unknown_version_is_rejected_not_guessed(self):
