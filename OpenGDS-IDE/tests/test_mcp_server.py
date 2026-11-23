@@ -204,10 +204,24 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
                 self.name = name
                 self.instructions = instructions
                 self.tools = {}
+                self.resources = {}
+                self.prompts = {}
 
             def tool(self):
                 def register(function):
                     self.tools[function.__name__] = function
+                    return function
+                return register
+
+            def resource(self, uri):
+                def register(function):
+                    self.resources[uri] = function
+                    return function
+                return register
+
+            def prompt(self):
+                def register(function):
+                    self.prompts[function.__name__] = function
                     return function
                 return register
 
@@ -234,7 +248,119 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
             "analyze_project_error", "discover_validation_tasks", "select_relevant_tests",
         }
         self.assertEqual(set(server.tools), expected)
+        self.assertEqual(set(server.resources), {
+            "opengds://workspace/overview",
+            "opengds://workspace/architecture",
+            "opengds://workspace/validation",
+        })
+        self.assertEqual(set(server.prompts), {
+            "analyze_gdsc", "debug_project_error", "review_source_change", "plan_validation",
+        })
         self.assertIn("never edits workspace files", server.instructions)
+        self.assertIn("read-only project resources", server.instructions)
+
+    def test_workspace_resources_are_bounded_and_validation_is_suggestion_only(self):
+        import json
+
+        class CaptureServer:
+            def __init__(self, name, instructions=""):
+                self.instructions = instructions
+                self.tools = {}
+                self.resources = {}
+                self.prompts = {}
+
+            def tool(self):
+                return lambda fn: self.tools.setdefault(fn.__name__, fn) or fn
+
+            def resource(self, uri):
+                def register(fn):
+                    self.resources[uri] = fn
+                    return fn
+                return register
+
+            def prompt(self):
+                def register(fn):
+                    self.prompts[fn.__name__] = fn
+                    return fn
+                return register
+
+        import sys
+        import types
+        mcp_module = types.ModuleType("mcp")
+        mcp_module.__path__ = []
+        server_module = types.ModuleType("mcp.server")
+        server_module.__path__ = []
+        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = CaptureServer
+        with patch.dict(sys.modules, {
+            "mcp": mcp_module,
+            "mcp.server": server_module,
+            "mcp.server.fastmcp": fastmcp_module,
+        }):
+            server = build_server(self.service)
+
+        overview = json.loads(server.resources["opengds://workspace/overview"]())
+        self.assertIn("main.gd", overview["sample_files"])
+        self.assertNotIn(str(self.root), str(overview))
+        self.assertFalse(overview["safety"]["arbitrary_command_execution"])
+        architecture = json.loads(server.resources["opengds://workspace/architecture"]())
+        self.assertIn("architecture", architecture)
+        validation = json.loads(server.resources["opengds://workspace/validation"]())
+        self.assertFalse(validation["executed"])
+        self.assertIn("suggestions only", validation["message"].lower())
+
+    def test_mcp_prompts_validate_paths_and_redact_untrusted_error_text(self):
+        server_holder = {}
+
+        class CaptureServer:
+            def __init__(self, name, instructions=""):
+                self.tools, self.resources, self.prompts = {}, {}, {}
+                self.instructions = instructions
+            def tool(self):
+                return lambda fn: self.tools.setdefault(fn.__name__, fn) or fn
+            def resource(self, uri):
+                def register(fn):
+                    self.resources[uri] = fn
+                    return fn
+                return register
+            def prompt(self):
+                def register(fn):
+                    self.prompts[fn.__name__] = fn
+                    return fn
+                return register
+
+        import sys
+        import types
+        mcp_module = types.ModuleType("mcp")
+        mcp_module.__path__ = []
+        server_module = types.ModuleType("mcp.server")
+        server_module.__path__ = []
+        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = CaptureServer
+        with patch.dict(sys.modules, {
+            "mcp": mcp_module,
+            "mcp.server": server_module,
+            "mcp.server.fastmcp": fastmcp_module,
+        }):
+            server = build_server(self.service)
+
+        prompts = server.prompts
+        self.assertIn("inspect_gdsc", prompts["analyze_gdsc"]("main.gdc"))
+        token = "sk-proj-1234567890abcdefghijklmnop"
+        debug = prompts["debug_project_error"]("Parse error " + token)
+        self.assertIn("[REDACTED]", debug)
+        self.assertNotIn(token, debug)
+        self.assertIn("review_source_file", prompts["review_source_change"]("main.gd"))
+        plan = prompts["plan_validation"]("main.gd\nREADME.md")
+        self.assertIn("select_relevant_tests", plan)
+        self.assertNotIn(str(self.root), plan)
+        for prompt, argument in (
+            ("analyze_gdsc", "../outside.gdc"),
+            ("review_source_change", "../outside.gd"),
+            ("plan_validation", "../outside.gd"),
+        ):
+            with self.subTest(prompt=prompt), self.assertRaises((ValueError, PermissionError, FileNotFoundError)):
+                prompts[prompt](argument)
 
 
 if __name__ == "__main__":
