@@ -231,7 +231,7 @@ class OpenGDSBackend:
                     continue
                 temp = target.with_name(target.name + ".opengds-tmp")
                 try:
-                    temp.write_text(source, encoding="utf-8", newline="\\n")
+                    temp.write_text(source, encoding="utf-8")
                     os.replace(temp, target)
                 finally:
                     if temp.exists():
@@ -241,7 +241,7 @@ class OpenGDSBackend:
             except Exception as exc:
                 failed += 1
                 messages.append(f"[ERROR] {binary}: {exc}")
-        report = "\\n".join([
+        report = "\n".join([
             f"Folder decompile: {root}", f"Succeeded: {ok}",
             f"Failed: {failed}", f"Skipped: {skipped}", *messages
         ])
