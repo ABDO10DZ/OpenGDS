@@ -1,6 +1,8 @@
 """Safe subprocess adapter for the OpenGDS.py command-line backend."""
 from __future__ import annotations
-import os, sys, subprocess, logging, re, time, shutil
+import os, sys, subprocess, logging, re, time, shutil, tempfile, importlib.util, hashlib
+
+import gdsc_compat as compat
 from pathlib import Path
 
 from logging_system import log_event, log_directory, configure_logging
@@ -46,6 +48,7 @@ class OpenGDSBackend:
         self.standalone_executable = (not self.embedded and self.script.suffix.lower() == ".exe")
         self.python_command = None if self.standalone_executable or self.embedded else find_python_command()
         self.default_timeout = 300
+        self._compat_core_module = None
         if not self.embedded and not self.script.is_file():
             raise FileNotFoundError(f"OpenGDS backend not found: {self.script}")
         if not self.embedded and not self.standalone_executable and not self.python_command:
@@ -171,9 +174,59 @@ class OpenGDSBackend:
             elif line.strip():
                 log_event(active_category, active_level, f"OpenGDS core trace: {line}")
 
+    def _compat_core(self):
+        if self._compat_core_module is not None:
+            return self._compat_core_module
+        if self.embedded or self.script.suffix.lower() != ".py":
+            raise BackendError("GDSC v100 support requires a Python OpenGDS.py core; the core file itself is not modified.")
+        module_name = "_opengds_compat_core_" + hashlib.sha256(str(self.script).encode()).hexdigest()[:12]
+        spec = importlib.util.spec_from_file_location(module_name, self.script)
+        if spec is None or spec.loader is None:
+            raise BackendError(f"Cannot load OpenGDS core for compatibility: {self.script}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+        self._compat_core_module = module
+        return module
+
     def compile(self, source: str | Path, output: str | Path | None = None,
                 compressed: bool = True, overwrite: bool = False, tab_size: int = 4,
-                continue_on_error: bool = False, cancel_event=None) -> subprocess.CompletedProcess:
+                continue_on_error: bool = False, cancel_event=None,
+                bytecode_version: int = 101) -> subprocess.CompletedProcess:
+        if int(bytecode_version) != 101:
+            if int(bytecode_version) != 100:
+                raise compat.ExternalBytecodeToolRequired(
+                    f"GDSC v{bytecode_version} compilation requires the legacy GDRE Tools adapter."
+                )
+            source_path = Path(source).expanduser().resolve()
+            if not source_path.is_file():
+                raise FileNotFoundError(source_path)
+            target = Path(output).expanduser().resolve() if output else source_path.with_suffix(".gdc")
+            if target.exists() and not overwrite:
+                raise BackendError(f"Output already exists: {target}")
+            core = self._compat_core()
+            data = compat.compile_data(
+                source_path.read_text(encoding="utf-8-sig"), core, 100,
+                compressed=compressed, tab_size=tab_size
+            )
+            header, decoded = compat.decode_compatible(data, core)
+            errors = [x for x in core.validate_gdc_structure(decoded) if x[0] == "ERROR"]
+            if header.version != 100 or errors:
+                raise BackendError("GDSC v100 failed structural validation: " + repr(errors[:5]))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temp = target.with_name(target.name + ".opengds-tmp")
+            try:
+                temp.write_bytes(data)
+                os.replace(temp, target)
+            finally:
+                if temp.exists():
+                    temp.unlink()
+            message = f"Compiled {source_path} -> {target}; GDSC v100; {len(decoded[5])} tokens"
+            return subprocess.CompletedProcess(["opengds-compat", "comp", str(source_path)], 0, message)
         args = ["comp", str(source), "--tab-size", str(tab_size)]
         if output: args += ["--output", str(output)]
         if not compressed: args.append("--no-compress")
@@ -185,12 +238,35 @@ class OpenGDSBackend:
         return self.run("diff", str(first), str(second)).stdout
 
     def decompile(self, binary: str | Path, *, cancel_event=None) -> str:
+        source = Path(binary).expanduser().resolve()
+        header = compat.inspect_header(source.read_bytes())
+        if header.version == 100:
+            return compat.decompile_data(source.read_bytes(), self._compat_core())[1]
+        if header.version != 101:
+            if header.profile and header.profile.capability == "gdre":
+                return compat.decompile_legacy_file(source)
+            raise compat.GDSCCompatibilityError(f"Unsupported GDSC revision {header.version}")
         return self.run("dcmp", str(binary), cancel_event=cancel_event).stdout
 
     def inspect(self, mode: str, path: str | Path, *, context: int = 4, show_tokens: bool = False,
                 max_tokens: int = 200, breakpoints=(), cancel_event=None) -> str:
         if mode not in {"info", "hexdump", "audit", "consts", "disasm", "dbg"}:
             raise ValueError(f"Unsupported inspection mode: {mode}")
+        data = Path(path).expanduser().resolve().read_bytes()
+        header = compat.inspect_header(data)
+        if header.version != 100:
+            return self._inspect_command(mode, path, context, show_tokens, max_tokens, breakpoints, cancel_event)
+        core = self._compat_core()
+        normalized = compat.normalize_v100(data, core)
+        with tempfile.TemporaryDirectory(prefix="opengds-v100-") as temp:
+            normalized_path = Path(temp) / Path(path).name
+            normalized_path.write_bytes(normalized)
+            report = self._inspect_command(mode, normalized_path, context, show_tokens, max_tokens, breakpoints, cancel_event)
+        report = report.replace(str(normalized_path), str(Path(path).expanduser().resolve()))
+        report = re.sub(r"(?m)^GDSC version: 101$", "GDSC version: 100", report)
+        return report
+
+    def _inspect_command(self, mode, path, context, show_tokens, max_tokens, breakpoints, cancel_event):
         args = [mode, str(path)]
         if mode == "dbg":
             args += ["--classic", "--context", str(context), "--max-tokens", str(max_tokens)]
