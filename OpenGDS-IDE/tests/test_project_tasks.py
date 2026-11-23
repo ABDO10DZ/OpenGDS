@@ -34,6 +34,22 @@ class ProjectTaskDiscoveryTests(unittest.TestCase):
             self.assertIn("python-unittest", tasks)
             self.assertIn("python-pytest", tasks)
 
+
+    def test_ignores_test_directory_rejected_by_workspace_guard(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_hidden.py").write_text("raise RuntimeError('never execute')\n", encoding="utf-8")
+
+            def guarded(relative):
+                if relative == "tests":
+                    raise PermissionError("symlink or excluded directory")
+                return root / relative
+
+            tasks = discover_project_tasks(root, safe_path=guarded)
+            self.assertNotIn("python-unittest", {task["id"] for task in tasks})
+
     def test_detects_node_test_script_but_never_copies_or_executes_script_body(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
