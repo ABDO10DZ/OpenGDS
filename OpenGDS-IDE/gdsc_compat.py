@@ -19,7 +19,9 @@ class BytecodeProfile:
     notes: str = ""
 
 PROFILES = {
-    3: BytecodeProfile(3, "Godot 1.x", "1.0–1.1", "gdre"),
+    1: BytecodeProfile(1, "Godot 1.x", "1.0.0", "gdre"),
+    2: BytecodeProfile(2, "Godot 1.x", "1.0.0", "gdre"),
+    3: BytecodeProfile(3, "Godot 1.x", "1.0.0–1.1.0", "gdre"),
     4: BytecodeProfile(4, "Godot 1.x", "1.1", "gdre"),
     5: BytecodeProfile(5, "Godot 2.x", "2.0.x", "gdre"),
     6: BytecodeProfile(6, "Godot 2.x", "2.0.x", "gdre"),
