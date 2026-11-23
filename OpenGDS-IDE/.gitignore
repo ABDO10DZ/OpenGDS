@@ -1,0 +1,30 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+.build-venv*/
+.tox/
+
+# Test, type-checker and coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+
+# Build and package outputs
+build/
+dist/
+*.manifest
+*.toc
+warn-*.txt
+
+# Local OpenGDS workspace/runtime data
+.opengds/
+.opengds-ide/

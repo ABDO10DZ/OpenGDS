@@ -1,6 +1,6 @@
 """Provider-neutral AI agent engine with workspace-scoped tools and approval-gated actions.
 
-API credentials are kept out of settings/logs and protected with Windows DPAPI.
+API credentials are kept out of settings/logs and protected by the operating-system keyring.
 File changes and commands are proposed first; nothing is changed or executed until
 an explicit approval call is made by the UI.
 """
@@ -24,6 +24,16 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
+
+from ai_providers import get_provider_adapter
+from ai_models import describe_model
+from project_tasks import discover_project_tasks
+from task_planner import build_task_plan
+from project_index import ProjectIndex
+from project_analysis import architecture_summary, trace_symbol, change_impact
+from project_debug import parse_diagnostics, parse_stack_trace, triage_error, source_context
+from project_review import review_file
+from project_validation import select_tests
 
 
 PROVIDERS = {
@@ -66,10 +76,13 @@ EXCLUDED_DIRS = {
     ".git", ".godot", ".opengds", ".opengds-ide", ".venv", "venv",
     ".build-venv", ".build-venv-cli", ".build-venv-gui", ".tox",
     "node_modules", "__pycache__", "build", "dist", ".pytest_cache",
+    ".ssh", ".aws", ".azure", ".gnupg", ".secrets",
 }
 SENSITIVE_NAMES = {
     "secrets.json", "credentials.json", "credentials.db", "token.json",
     "id_rsa", "id_ed25519", "known_hosts", "authorized_keys",
+    ".npmrc", ".pypirc", ".netrc", ".git-credentials", "auth.json",
+    "service-account.json", "access_token", "refresh_token", ".dockerconfigjson",
 }
 SENSITIVE_SUFFIXES = {".pfx", ".p12", ".pem", ".key", ".keystore", ".cer", ".crt"}
 MAX_READ_BYTES = 200_000
@@ -207,9 +220,17 @@ class AgentCancelled(RuntimeError):
 
 
 class CredentialStore:
-    """Current-user encrypted credential storage using Windows DPAPI."""
+    """Store API credentials in the operating system's user keychain.
+
+    Windows DPAPI files created by earlier OpenGDS-IDE versions are read and
+    migrated to the OS keychain on first access. No plaintext file fallback is
+    provided: Linux requires a Secret Service-compatible keyring.
+    """
+
+    SERVICE_NAME = "OpenGDS-IDE"
 
     def __init__(self, directory: str | Path | None = None):
+        # Keep the legacy location only for one-time DPAPI migration.
         self.directory = Path(directory or (Path.home() / ".opengds-ide" / "secrets")).expanduser()
 
     @staticmethod
@@ -221,31 +242,13 @@ class CredentialStore:
         return DATA_BLOB, backing, blob
 
     @classmethod
-    def _protect(cls, data: bytes) -> bytes:
+    def _unprotect_legacy_dpapi(cls, data: bytes) -> bytes:
         if os.name != "nt":
-            raise RuntimeError("Persistent API-key encryption is currently supported on Windows only. Use OPENGDS_AI_API_KEY for this session on other platforms.")
-        crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        DATA_BLOB, backing, input_blob = cls._blob(data)
-        output_blob = DATA_BLOB()
-        crypt32.CryptProtectData.argtypes = [ctypes.POINTER(DATA_BLOB), ctypes.c_wchar_p,
-            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
-            ctypes.POINTER(DATA_BLOB)]
-        crypt32.CryptProtectData.restype = ctypes.c_int
-        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-        kernel32.LocalFree.restype = ctypes.c_void_p
-        if not crypt32.CryptProtectData(ctypes.byref(input_blob), "OpenGDS-IDE API credential",
-                                        None, None, None, 0, ctypes.byref(output_blob)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            return ctypes.string_at(output_blob.pbData, output_blob.cbData)
-        finally:
-            kernel32.LocalFree(output_blob.pbData)
-
-    @classmethod
-    def _unprotect(cls, data: bytes) -> bytes:
-        if os.name != "nt":
-            raise RuntimeError("DPAPI credentials can only be decrypted by the Windows user who created them.")
+            raise RuntimeError(
+                "This credential was encrypted by Windows DPAPI and can only be "
+                "migrated on the Windows account that created it. Re-enter the API key "
+                "on this computer to store it in its system keychain."
+            )
         crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         DATA_BLOB, backing, input_blob = cls._blob(data)
@@ -268,29 +271,48 @@ class CredentialStore:
         slug = re.sub(r"[^a-z0-9_-]+", "-", provider.lower()).strip("-") or "provider"
         return self.directory / f"{slug}.dpapi"
 
+    @staticmethod
+    def _keyring():
+        try:
+            import keyring
+            backend = keyring.get_keyring()
+            if getattr(backend, "priority", 0) <= 0:
+                raise RuntimeError("No secure operating-system keyring is available.")
+            return keyring
+        except Exception as exc:
+            raise RuntimeError(
+                "OpenGDS-IDE could not access a secure system keyring. "
+                "Unlock or configure Windows Credential Manager, macOS Keychain, "
+                "or Linux Secret Service, then retry. API keys are not saved in plaintext."
+            ) from exc
+
     def set(self, provider: str, api_key: str) -> None:
         key = str(api_key or "").strip()
-        path = self._path(provider)
-        if not key:
-            path.unlink(missing_ok=True)
-            return
-        encrypted = self._protect(key.encode("utf-8"))
-        self.directory.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=".credential-", dir=str(self.directory))
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(encrypted)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp_name, path)
-        finally:
-            Path(temp_name).unlink(missing_ok=True)
+        keyring = self._keyring()
+        if key:
+            keyring.set_password(self.SERVICE_NAME, str(provider), key)
+        else:
+            keyring.delete_password(self.SERVICE_NAME, str(provider))
+        # Remove a legacy encrypted file only after the keyring operation succeeds.
+        self._path(provider).unlink(missing_ok=True)
 
     def get(self, provider: str) -> str:
         path = self._path(provider)
         if path.is_file():
-            return self._unprotect(path.read_bytes()).decode("utf-8")
-        # Environment variable fallback is intentionally session-scoped.
+            legacy_key = self._unprotect_legacy_dpapi(path.read_bytes()).decode("utf-8")
+            self._keyring().set_password(self.SERVICE_NAME, str(provider), legacy_key)
+            path.unlink(missing_ok=True)
+            return legacy_key
+        try:
+            keyring = self._keyring()
+            stored = keyring.get_password(self.SERVICE_NAME, str(provider))
+            if stored:
+                return stored
+        except RuntimeError:
+            # A missing/unavailable OS keyring must not prevent the IDE from
+            # starting; the environment fallback remains session-only.
+            pass
+        # Environment fallback is intentionally session-scoped and is never persisted.
         return os.environ.get("OPENGDS_AI_API_KEY", "")
 
 
@@ -299,15 +321,68 @@ OPENAI_TOOLS = [
     {"type": "function", "function": {"name": "read_file", "description": "Read a UTF-8 text file inside the current workspace. Credentials and secret files are blocked.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "search_text", "description": "Search text in project source files and return matching lines.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["query"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_change", "description": "Propose a workspace file write or deletion. The user must approve it before it is applied.", "parameters": {"type": "object", "properties": {"operation": {"type": "string", "enum": ["write", "delete"]}, "path": {"type": "string"}, "content": {"type": "string"}, "reason": {"type": "string"}}, "required": ["operation", "path", "reason"], "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "propose_command", "description": "Propose a command as an argument array. It is never run until the user explicitly approves it.", "parameters": {"type": "object", "properties": {"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}, "cwd": {"type": "string"}, "reason": {"type": "string"}}, "required": ["argv", "reason"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_command", "description": "Propose a command as an argument array. It is never run until the user explicitly approves it.", "parameters": {"type": "object", "properties": {"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}, "cwd": {"type": "string"}, "reason": {"type": "string"}, "task_id": {"type": "string"}}, "required": ["argv", "reason"], "additionalProperties": False}}},
 ]
 
 
-READ_ONLY_TOOLS = OPENAI_TOOLS[:3]
+GIT_READ_TOOLS = [
+    {"type": "function", "function": {"name": "git_status", "description": "Read the current Git branch and workspace changes. Secret paths are omitted. Read-only.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "git_diff", "description": "Read a bounded diff for one workspace-relative source file against HEAD. Secret files are blocked. Read-only.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}}},
+]
+
+
+TASK_PLAN_TOOLS = [
+    {"type": "function", "function": {"name": "create_task_plan", "description": "Create a visible, bounded task plan for the user's coding goal. Planning is not execution; each command still requires separate user approval.", "parameters": {"type": "object", "properties": {"goal": {"type": "string"}, "steps": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "object", "properties": {"title": {"type": "string"}, "description": {"type": "string"}, "task_id": {"type": "string"}}, "required": ["title"], "additionalProperties": False}}}, "required": ["goal", "steps"], "additionalProperties": False}}},
+]
+
+
+
+PROJECT_INDEX_TOOLS = [
+    {"type": "function", "function": {"name": "project_index_refresh", "description": "Refresh the local persistent project symbol index. Stores symbol names and file metadata only, never source text; excludes secret files.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_index_status", "description": "Show the current project's local symbol-index size and cache location.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_symbol_search", "description": "Find declarations and references by symbol name across the indexed workspace.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["query"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_related_files", "description": "Find files that share declared symbols with a workspace-relative source file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["path"], "additionalProperties": False}}},
+
+    {"type": "function", "function": {"name": "project_architecture_summary", "description": "Summarize indexed project layout and declarations (static inventory, not runtime graph). Refresh index first if needed.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_trace_symbol", "description": "Trace a symbol name to declaration/reference matches and files. Name-based; cross-language references may be incomplete.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["query"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_change_impact", "description": "Estimate likely files affected by changing a source file using shared declarations and symbol-name matches. Heuristic, not a guaranteed dependency graph.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["path"], "additionalProperties": False}}},
+]
+
+DEBUG_TOOLS = [
+    {"type": "function", "function": {"name": "debug_analyze_error", "description": "Parse compiler/runtime error output and safely map file/line references to source excerpts. Root-cause analysis remains heuristic.", "parameters": {"type": "object", "properties": {"error_text": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["error_text"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "debug_parse_stack_trace", "description": "Extract file/line stack frames from a pasted traceback or runtime stack. Does not execute code.", "parameters": {"type": "object", "properties": {"stack_trace": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["stack_trace"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "debug_source_context", "description": "Read a small, safe source excerpt around a workspace-relative line number.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "line": {"type": "integer", "minimum": 1}, "radius": {"type": "integer", "minimum": 0, "maximum": 8}}, "required": ["path", "line"], "additionalProperties": False}}},
+]
+
+PROJECT_REVIEW_TOOLS = [
+    {"type": "function", "function": {"name": "project_review_file", "description": "Run lightweight read-only heuristic checks on one source file. Reports suspicious patterns and unfinished markers; may have false positives.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "project_review_workspace", "description": "Review a bounded set of workspace source files for common risky patterns. Static only; no commands or edits.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "additionalProperties": False}}},
+]
+
+PROJECT_VALIDATION_TOOLS = [
+    {"type": "function", "function": {"name": "project_select_tests", "description": "Use changed workspace paths and bounded test-source references to rank likely relevant tests. Reads Git status when changed_paths is omitted. Never executes tests; every suggested command requires separate user approval.", "parameters": {"type": "object", "properties": {"changed_paths": {"type": "array", "items": {"type": "string"}, "maxItems": 200}}, "additionalProperties": False}}},
+]
+
+PROJECT_TASK_TOOLS = [
+    {"type": "function", "function": {"name": "detect_project_tasks", "description": "Detect known project test/build tasks by inspecting safe manifests. This never executes commands; returned commands still require explicit approval.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+]
+
+
+READ_ONLY_TOOLS = OPENAI_TOOLS[:3] + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + DEBUG_TOOLS + PROJECT_REVIEW_TOOLS + PROJECT_VALIDATION_TOOLS
 
 OPENGDS_READ_TOOLS = [
     {"type": "function", "function": {"name": "opengds_inspect", "description": "Use the bundled OpenGDS core API to inspect a GDSC file. Supports info, audit, consts, disasm, hexdump and static dbg modes. Read-only.", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["info", "audit", "consts", "disasm", "hexdump", "dbg"]}, "path": {"type": "string"}}, "required": ["mode", "path"], "additionalProperties": False}}},
 ]
+IDE_CONTROL_TOOLS = [
+    {"type": "function", "function": {"name": "ide_get_debug_state", "description": "Read live Godot DAP connection state, bounded workspace-relative call-stack locations and breakpoints. Does not expose local variable values or control execution.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_get_diagnostics", "description": "Read up to 100 structured diagnostics from the live IDE Problems panel, with safe workspace-relative paths and redacted messages. Does not read raw logs or source files.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_get_state", "description": "Read the active OpenGDS-IDE workspace, editor, cursor and open tabs.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_open_file", "description": "Open an existing, non-sensitive workspace-relative file in the IDE editor. This only changes the UI.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_go_to_line", "description": "Navigate the active editor to a line and optional column.", "parameters": {"type": "object", "properties": {"line": {"type": "integer", "minimum": 1}, "column": {"type": "integer", "minimum": 0}}, "required": ["line"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "ide_focus_panel", "description": "Show and focus an IDE panel.", "parameters": {"type": "object", "properties": {"panel": {"type": "string", "enum": ["explorer", "source_control", "code_insight", "ai_assistant", "output"]}}, "required": ["panel"], "additionalProperties": False}}},
+]
+
+
 OPENGDS_AGENT_TOOLS = OPENGDS_READ_TOOLS + [
     {"type": "function", "function": {"name": "opengds_decompile", "description": "Decompile a .gdc file through OpenGDS-IDE's bundled OpenGDS.py backend. The reconstructed .gd source is proposed for review and is not written until the user approves it.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "output": {"type": "string"}, "reason": {"type": "string"}}, "required": ["path", "reason"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "opengds_compile", "description": "Prepare a GDScript-to-GDSC compile operation using OpenGDS-IDE's bundled OpenGDS.py backend. The .gdc output is not created or overwritten until the user approves the operation.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "output": {"type": "string"}, "compressed": {"type": "boolean"}, "tab_size": {"type": "integer", "minimum": 1, "maximum": 16}, "reason": {"type": "string"}}, "required": ["path", "reason"], "additionalProperties": False}}},
@@ -328,21 +403,24 @@ class AgentEngine:
     """Workspace-scoped, tool-using AI agent with explicit approval for writes/commands."""
 
     def __init__(self, workspace: str | Path, config: AgentConfig,
-                 *, credential_store: CredentialStore | None = None, backend=None):
+                 *, credential_store: CredentialStore | None = None, backend=None, ide_controller=None):
         self.workspace = Path(workspace).expanduser().resolve()
         if not self.workspace.is_dir():
             raise NotADirectoryError(self.workspace)
         self.config = config
         self.credential_store = credential_store or CredentialStore()
         self.backend = backend
+        self.ide_controller = ide_controller
         if not self.config.api_key:
             self.config.api_key = self.credential_store.get(self.config.provider)
         self.history: list[dict[str, str]] = []
         self.pending: dict[str, PendingAction] = {}
+        self.task_plan: dict[str, Any] | None = None
         self._lock = threading.RLock()
         self._request_cancel_event: threading.Event | None = None
         self._active_response = None
         self._embedding_cache: dict[tuple[str, ...], list[float]] = {}
+        self._project_index: ProjectIndex | None = None
 
     def cancel(self) -> None:
         """Cancel the active request and close its current streaming response."""
@@ -369,6 +447,7 @@ class AgentEngine:
             self.workspace = root
             self.history.clear()
             self.pending.clear()
+            self.task_plan = None
 
     def _safe_path(self, relative: str, *, for_write: bool = False) -> Path:
         value = str(relative or "").strip().replace("\\", "/")
@@ -378,7 +457,7 @@ class AgentEngine:
         windows_path = PureWindowsPath(value)
         if raw.is_absolute() or windows_path.is_absolute() or windows_path.drive or any(part in {"..", ""} for part in raw.parts):
             raise ValueError("The agent can only access paths relative to the current workspace.")
-        if any(part in EXCLUDED_DIRS for part in raw.parts):
+        if any(part.lower() in EXCLUDED_DIRS for part in raw.parts):
             raise PermissionError("Access to repository metadata, caches and build output is blocked.")
         lowered_parts = [part.lower() for part in raw.parts]
         if any(part.startswith(".env") or part in SENSITIVE_NAMES or Path(part).suffix.lower() in SENSITIVE_SUFFIXES
@@ -407,7 +486,7 @@ class AgentEngine:
                 rel = path.relative_to(self.workspace)
             except ValueError:
                 continue
-            if any(part in EXCLUDED_DIRS for part in rel.parts) or path.is_symlink() or not path.is_file():
+            if any(part.lower() in EXCLUDED_DIRS for part in rel.parts) or path.is_symlink() or not path.is_file():
                 continue
             lowered_parts = [part.lower() for part in rel.parts]
             if any(part.startswith(".env") or part in SENSITIVE_NAMES or Path(part).suffix.lower() in SENSITIVE_SUFFIXES
@@ -610,6 +689,10 @@ class AgentEngine:
 
     def _execute_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
+            if name.startswith("ide_"):
+                if self.ide_controller is None:
+                    raise RuntimeError("IDE control tools are unavailable in this agent session.")
+                return self.ide_controller.call(name, args)
             if name == "list_files":
                 return {"files": self._project_files(int(args.get("limit", 200)))}
             if name == "read_file":
@@ -626,6 +709,140 @@ class AgentEngine:
                 except UnicodeDecodeError as exc:
                     raise ValueError("Binary or non-UTF-8 files cannot be read by the agent.") from exc
                 return {"path": path.relative_to(self.workspace).as_posix(), "content": content}
+            if name == "create_task_plan":
+                tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
+                plan = build_task_plan(args.get("goal", ""), args.get("steps", []), tasks)
+                with self._lock:
+                    self.task_plan = plan
+                return {"plan": plan, "message": "Plan created for user review. No files were changed and no commands were executed."}
+            if name == "detect_project_tasks":
+                tasks = discover_project_tasks(self.workspace, safe_path=self._safe_path)
+                return {"tasks": tasks, "count": len(tasks),
+                        "message": "Discovery only: no command was executed. Select a task and submit its command through propose_command for explicit approval."}
+            if name == "project_select_tests":
+                changed_paths = args.get("changed_paths")
+                if changed_paths is None:
+                    status = self._execute_tool("git_status", {})
+                    if status.get("error"):
+                        raise RuntimeError("Cannot infer changed files: " + str(status["error"]))
+                    changed_paths = [row["path"] for row in status.get("changes", [])]
+                if not isinstance(changed_paths, list) or len(changed_paths) > 200:
+                    raise ValueError("changed_paths must contain at most 200 paths.")
+                return select_tests(self.workspace, changed_paths, scope_allows=self._scope_allows)
+            if name == "project_review_file":
+                path = self._safe_path(str(args.get("path", "")))
+                relative = path.relative_to(self.workspace).as_posix()
+                if not self._scope_allows(relative):
+                    raise PermissionError("Review path is outside the current assistant focus.")
+                return review_file(self.workspace, relative)
+            if name == "project_review_workspace":
+                findings = []
+                reviewed = []
+                for relative in self._project_files(max(1, min(int(args.get("limit", 50)), 100))):
+                    if not self._scope_allows(relative):
+                        continue
+                    result = review_file(self.workspace, relative)
+                    if "findings" in result:
+                        reviewed.append(relative)
+                        findings.extend({**row, "path": relative} for row in result["findings"])
+                return {"reviewed_files": reviewed, "findings": findings[:200], "truncated": len(findings) > 200,
+                        "counts": {level: sum(1 for row in findings if row["severity"] == level) for level in ("high", "medium", "low")},
+                        "summary": "Heuristic scan only; verify findings and run approved tests."}
+            if name == "debug_analyze_error":
+                result = triage_error(self.workspace, str(args.get("error_text", "")), args.get("limit", 20))
+                result["source_contexts"] = [row for row in result.get("source_contexts", [])
+                    if self._scope_allows(row.get("context", {}).get("path", ""))]
+                return result
+            if name == "debug_parse_stack_trace":
+                return {"frames": parse_stack_trace(str(args.get("stack_trace", "")), args.get("limit", 50))}
+            if name == "debug_source_context":
+                path = self._safe_path(str(args.get("path", "")))
+                relative = path.relative_to(self.workspace).as_posix()
+                if not self._scope_allows(relative):
+                    raise PermissionError("Source context path is outside the current assistant focus.")
+                return source_context(self.workspace, relative, int(args.get("line", 1)), int(args.get("radius", 4)))
+            if name.startswith("project_index_") or name in {"project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact"}:
+                if self._project_index is None:
+                    self._project_index = ProjectIndex(self.workspace, safe_path=self._safe_path,
+                        scope_allows=self._scope_allows)
+                if name == "project_index_refresh":
+                    return self._project_index.refresh()
+                if name == "project_index_status":
+                    return self._project_index.status()
+                if name == "project_symbol_search":
+                    return {"results": self._project_index.search(args.get("query", ""), args.get("limit", 40))}
+                if name == "project_related_files":
+                    path = self._safe_path(str(args.get("path", "")))
+                    relative = path.relative_to(self.workspace).as_posix()
+                    if not self._scope_allows(relative):
+                        raise PermissionError("File is outside the current assistant focus.")
+                    return {"path": relative, "related": self._project_index.related_files(relative, args.get("limit", 20))}
+                if name == "project_architecture_summary":
+                    return architecture_summary(self._project_index)
+                if name == "project_trace_symbol":
+                    return trace_symbol(self._project_index, args.get("query", ""), args.get("limit", 100))
+                if name == "project_change_impact":
+                    path = self._safe_path(str(args.get("path", "")))
+                    relative = path.relative_to(self.workspace).as_posix()
+                    if not self._scope_allows(relative):
+                        raise PermissionError("File is outside the current assistant focus.")
+                    if not path.is_file():
+                        raise FileNotFoundError(relative)
+                    return change_impact(self._project_index, relative, args.get("limit", 30))
+            if name == "git_status":
+                root_result = subprocess.run(
+                    ["git", "-C", str(self.workspace), "rev-parse", "--show-toplevel"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
+                )
+                if root_result.returncode:
+                    raise RuntimeError("The active workspace is not a Git repository or Git is unavailable.")
+                git_root = Path(root_result.stdout.strip()).resolve()
+                if git_root != self.workspace:
+                    raise PermissionError("Git workspace root must match the active IDE workspace.")
+                status = subprocess.run(
+                    ["git", "-C", str(self.workspace), "status", "--porcelain=v1", "--branch", "--untracked-files=all"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=15, check=False,
+                )
+                if status.returncode:
+                    raise RuntimeError(status.stderr[-2000:] or "Git status failed.")
+                rows = status.stdout.splitlines()
+                branch = rows[0][3:].strip() if rows and rows[0].startswith("## ") else "unknown"
+                changes = []
+                for row in rows[1:]:
+                    if len(row) < 4:
+                        continue
+                    file_path = row[3:].split(" -> ")[-1].strip().strip('"')
+                    parts = [part.lower() for part in Path(file_path.replace("\\\\", "/")).parts]
+                    if any(part in EXCLUDED_DIRS or part.startswith(".env") or part in SENSITIVE_NAMES
+                           or Path(part).suffix.lower() in SENSITIVE_SUFFIXES for part in parts):
+                        continue
+                    changes.append({"status": row[:2], "path": file_path})
+                return {"branch": branch, "changes": changes[:200], "truncated": len(changes) > 200}
+            if name == "git_diff":
+                raw_path = str(args.get("path", ""))
+                path = self._safe_path(raw_path)
+                relative = path.relative_to(self.workspace).as_posix()
+                if not self._scope_allows(relative):
+                    raise PermissionError("Git diff path is outside the current assistant focus.")
+                root_result = subprocess.run(
+                    ["git", "-C", str(self.workspace), "rev-parse", "--show-toplevel"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
+                )
+                if root_result.returncode or Path(root_result.stdout.strip()).resolve() != self.workspace:
+                    raise RuntimeError("The active workspace must be the Git repository root.")
+                result = subprocess.run(
+                    ["git", "-C", str(self.workspace), "diff", "--no-ext-diff", "--no-textconv",
+                     "--no-color", "--unified=3", "HEAD", "--", relative],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", timeout=15, check=False,
+                )
+                if result.returncode:
+                    raise RuntimeError(result.stderr[-2000:] or "Git diff failed.")
+                return {"path": relative, "diff": result.stdout[:30000],
+                        "truncated": len(result.stdout) > 30000}
             if name == "search_text":
                 query = str(args.get("query", "")).strip()
                 if not query:
@@ -761,9 +978,23 @@ class AgentEngine:
                 if cwd.exists() and not cwd.is_dir():
                     raise NotADirectoryError("Command working directory is not a folder inside the workspace.")
                 action_id = uuid.uuid4().hex[:10]
-                proposal = PendingAction(action_id, "command", operation="run", reason=str(args.get("reason", "Agent-proposed command"))[:1000], argv=list(argv), cwd=str(cwd))
+                task_id = str(args.get("task_id", "") or "").strip()
+                if task_id:
+                    known_task_ids = {task["id"] for task in discover_project_tasks(self.workspace, safe_path=self._safe_path)}
+                    if task_id not in known_task_ids:
+                        raise ValueError(f"Unknown project validation task id: {task_id}")
+                    if not self.task_plan or not any(step.get("task_id") == task_id for step in self.task_plan.get("steps", [])):
+                        raise ValueError("The task id must be linked to a step in the current task plan.")
+                proposal = PendingAction(action_id, "command", operation="run",
+                    reason=str(args.get("reason", "Agent-proposed command"))[:1000],
+                    argv=list(argv), cwd=str(cwd), metadata={"task_id": task_id})
                 with self._lock:
                     self.pending[action_id] = proposal
+                    if task_id and self.task_plan:
+                        for step in self.task_plan["steps"]:
+                            if step.get("task_id") == task_id and step.get("status") == "planned":
+                                step["status"] = "awaiting_approval"
+                                break
                 relative_cwd = cwd.relative_to(self.workspace).as_posix() or "."
                 return {"queued_for_approval": True, "action_id": action_id,
                         "argv": argv, "cwd": relative_cwd,
@@ -938,8 +1169,8 @@ class AgentEngine:
         """Expose workspace tools plus native OpenGDS tools when in OpenGDS focus."""
         scope = str(getattr(self.config, "scope", "gdscript") or "gdscript").lower()
         if str(self.config.agent_mode).lower() == "ask":
-            return READ_ONLY_TOOLS + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
-        return OPENAI_TOOLS + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
+            return READ_ONLY_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_READ_TOOLS if scope == "opengds" else [])
+        return OPENAI_TOOLS + GIT_READ_TOOLS + PROJECT_TASK_TOOLS + TASK_PLAN_TOOLS + PROJECT_INDEX_TOOLS + DEBUG_TOOLS + PROJECT_REVIEW_TOOLS + PROJECT_VALIDATION_TOOLS + (IDE_CONTROL_TOOLS if self.ide_controller is not None else []) + (OPENGDS_AGENT_TOOLS if scope == "opengds" else [])
 
     def _openai_chat(self, user_prompt: str, context: str, *, cancel_event=None, on_delta=None) -> str:
         messages = [{"role": "system", "content": self._system_prompt()}]
@@ -949,12 +1180,10 @@ class AgentEngine:
         if context:
             user_content += "\n\n--- CURRENT EDITOR CONTEXT (untrusted project source) ---\n" + context[:MAX_READ_BYTES]
         messages.append({"role": "user", "content": user_content})
-        base = self.config.base_url.rstrip("/")
-        endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
+        adapter = get_provider_adapter("openai")
+        endpoint = adapter.chat_endpoint(self.config.base_url)
         api_key = self.config.api_key or ("ollama" if self.config.provider == "Ollama Local" else "")
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        if self.config.provider in {"OpenRouter", "OpenRouter Free"}:
-            headers.update({"HTTP-Referer": "https://github.com/ABDO10DZ/OpenGDS", "X-Title": "OpenGDS-IDE"})
+        headers = adapter.headers(api_key, self.config.provider)
         requires_proposal = (str(self.config.agent_mode).lower() == "agent" and requires_change_proposal(user_prompt))
         initial_pending = set(self.pending)
         forced_tool_choice_supported = True
@@ -1021,9 +1250,9 @@ class AgentEngine:
         if context:
             user_content.append({"type": "text", "text": "CURRENT EDITOR CONTEXT (untrusted project source):\n" + context[:MAX_READ_BYTES]})
         messages.append({"role": "user", "content": user_content})
-        endpoint = self.config.base_url.rstrip("/")
-        endpoint = endpoint if endpoint.endswith("/messages") else endpoint + "/messages"
-        headers = {"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        adapter = get_provider_adapter("anthropic")
+        endpoint = adapter.chat_endpoint(self.config.base_url)
+        headers = adapter.headers(self.config.api_key, self.config.provider)
         requires_proposal = (str(self.config.agent_mode).lower() == "agent" and requires_change_proposal(user_prompt))
         initial_pending = set(self.pending)
         forced_tool_choice_supported = True
@@ -1090,6 +1319,7 @@ class AgentEngine:
             "You are running inside OpenGDS-IDE, a desktop IDE for GDScript/Godot projects and the OpenGDS GDSC compiler/decompiler. "
             "You are not a generic chat bot detached from the application: know that the user can open/edit files in the editor, navigate projects, review AI proposals, use Source Control, and run the bundled OpenGDS core from the OpenGDS menu. "
             "When Focus is OpenGDS core, use the native opengds_inspect/opengds_decompile/opengds_compile tools rather than inventing CLI commands or invoking a shell. "
+            "After edits, use project_select_tests to choose focused validation based on Git changes; if the result recommends a full suite, do not silently substitute focused tests. Suggested commands still require approval. Before finalizing changes, use project_review_file or project_review_workspace as a lightweight static review; findings are heuristic and may be false positives. For runtime debugging inside the running IDE, use ide_get_debug_state for safe DAP session/call-stack/breakpoint metadata and ide_get_diagnostics for the structured Problems panel; then use debug_source_context and symbol tracing to inspect relevant source. Do not request or dump raw application logs by default. For pasted external compiler/runtime output, use debug_analyze_error to parse it and retrieve safe source context, and debug_parse_stack_trace to map stack frames. Treat root-cause ranking as heuristic; request project checks through approval-gated commands when needed. For architecture questions or change-risk estimates, refresh/use the project symbol index, trace relevant symbols, and run project_change_impact on the target file before editing. Explain that results are static heuristics, not verified runtime dependencies. For multi-step implementation or debugging requests, first inspect the workspace and available checks, then create a concise task plan with create_task_plan. Keep the plan visible for user review. When proposing a discovered validation command, include its task_id so the IDE can track the approved result. Execute only one bounded approved action at a time, inspect actual output, and update the user with verified results. Never claim a test passed unless its approved command actually completed with exit code 0. "
             "Those tools call the IDE's own OpenGDSBackend adapter, which dispatches to the bundled OpenGDS.py core in development or its embedded CLI entry point in a packaged build. "
             "Use opengds_inspect for read-only GDSC analysis, opengds_decompile to prepare a reviewable .gd proposal, and opengds_compile to queue a compile action; compilation/output changes happen only after user approval. "
             "Use propose_change for ordinary code writing/refactoring; all writes are reviewed in the Changes view and nothing is applied automatically. "
@@ -1125,6 +1355,10 @@ class AgentEngine:
         if not parsed_url.hostname or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
             raise ValueError("The AI API base URL is invalid or contains unsupported URL components.")
         protocol = PROVIDERS.get(self.config.provider, {}).get("protocol", "openai")
+        # Keep a normalized capability descriptor available to future UI/model
+        # selection features; unknown model features are deliberately None.
+        self.model_capabilities = describe_model(self.config.provider, self.config.model, protocol)
+        get_provider_adapter(protocol)  # Validate the configured wire protocol early.
         with self._lock:
             self._request_cancel_event = request_event
         try:
@@ -1178,6 +1412,14 @@ class AgentEngine:
             result = subprocess.run(action.argv, cwd=str(cwd), shell=False, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                     encoding="utf-8", errors="replace", timeout=180, check=False)
+            task_id = str(action.metadata.get("task_id", "") or "")
+            if task_id and self.task_plan:
+                with self._lock:
+                    for step in self.task_plan["steps"]:
+                        if step.get("task_id") == task_id and step.get("status") == "awaiting_approval":
+                            step["status"] = "passed" if result.returncode == 0 else "failed"
+                            step["exit_code"] = result.returncode
+                            break
             message = f"Command exited with code {result.returncode}.\n{result.stdout[-20000:]}"
         elif action.kind == "file":
             path = self._safe_path(action.path, for_write=True)

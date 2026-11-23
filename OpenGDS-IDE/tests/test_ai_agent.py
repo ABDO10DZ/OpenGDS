@@ -8,6 +8,46 @@ from types import SimpleNamespace
 
 class AgentEngineTests(unittest.TestCase):
 
+
+    def test_project_index_tools_available_and_work(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src.py").write_text("class CrossPlatform:\n    def run(self): pass\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask", scope="all"))
+            names = [item["function"]["name"] for item in engine.available_tools()]
+            for name in ("project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files"):
+                self.assertIn(name, names)
+            self.assertEqual(engine._execute_tool("project_index_refresh", {})["updated"], 1)
+            result = engine._execute_tool("project_symbol_search", {"query": "CrossPlatform"})
+            self.assertEqual(result["results"][0]["path"], "src.py")
+            status = engine._execute_tool("project_index_status", {})
+            self.assertEqual(status["indexed_files"], 1)
+
+    def test_ide_controls_are_exposed_only_when_bridge_is_attached(self):
+        with tempfile.TemporaryDirectory() as td:
+            without_bridge = AgentEngine(td, AgentConfig(scope="gdscript", agent_mode="ask"))
+            self.assertNotIn("ide_get_state", [row["function"]["name"] for row in without_bridge.available_tools()])
+            class FakeIDE:
+                def call(self, name, args):
+                    return {"tool": name, "args": args}
+            with_bridge = AgentEngine(td, AgentConfig(scope="gdscript", agent_mode="ask"), ide_controller=FakeIDE())
+            names = [row["function"]["name"] for row in with_bridge.available_tools()]
+            self.assertIn("ide_get_state", names)
+            self.assertIn("ide_open_file", names)
+            self.assertIn("ide_go_to_line", names)
+            self.assertIn("ide_focus_panel", names)
+            self.assertIn("ide_get_diagnostics", names)
+            self.assertIn("ide_get_debug_state", names)
+            self.assertIn("ide_get_debug_state", names)
+            result = with_bridge._execute_tool("ide_get_state", {})
+            self.assertEqual(result["tool"], "ide_get_state")
+            diagnostics = with_bridge._execute_tool("ide_get_diagnostics", {})
+            self.assertEqual(diagnostics["tool"], "ide_get_diagnostics")
+            debug_state = with_bridge._execute_tool("ide_get_debug_state", {})
+            self.assertEqual(debug_state["tool"], "ide_get_debug_state")
+            debug_state = with_bridge._execute_tool("ide_get_debug_state", {})
+            self.assertEqual(debug_state["tool"], "ide_get_debug_state")
+
     def test_openai_stream_forwards_text_and_reassembles_tool_call_fragments(self):
         import json
         from unittest.mock import patch
@@ -145,9 +185,44 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
             names = [item["function"]["name"] for item in engine.available_tools()]
-            self.assertEqual(names, ["list_files", "read_file", "search_text"])
+            self.assertEqual(names, ["list_files", "read_file", "search_text", "git_status", "git_diff", "detect_project_tasks", "create_task_plan", "project_index_refresh", "project_index_status", "project_symbol_search", "project_related_files", "project_architecture_summary", "project_trace_symbol", "project_change_impact", "debug_analyze_error", "debug_parse_stack_trace", "debug_source_context", "project_review_file", "project_review_workspace", "project_select_tests"])
             self.assertNotIn("propose_change", names)
             self.assertNotIn("propose_command", names)
+
+    def test_git_read_tools_are_available_in_ask_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
+            names = [item["function"]["name"] for item in engine.available_tools()]
+            self.assertIn("git_status", names)
+            self.assertIn("git_diff", names)
+
+    def test_git_status_and_diff_are_read_only_and_workspace_scoped(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "main.gd").write_text("extends Node\n", encoding="utf-8")
+            subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "tests@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "OpenGDS Tests"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "main.gd"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "baseline"], check=True, capture_output=True)
+            (root / "main.gd").write_text("extends Node\nfunc _ready():\n    pass\n", encoding="utf-8")
+            (root / ".env").write_text("TOKEN=never-return-this\\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask"))
+            status = engine._execute_tool("git_status", {})
+            self.assertIn("main.gd", [row["path"] for row in status["changes"]])
+            self.assertNotIn(".env", [row["path"] for row in status["changes"]])
+            diff = engine._execute_tool("git_diff", {"path": "main.gd"})
+            self.assertIn("+func _ready():", diff["diff"])
+            self.assertNotIn("TOKEN", diff["diff"])
+            self.assertEqual((root / "main.gd").read_text(encoding="utf-8"),
+                             "extends Node\nfunc _ready():\n    pass\n")
+
+    def test_git_tools_require_workspace_root_to_be_repository(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine = AgentEngine(td, AgentConfig(agent_mode="ask"))
+            result = engine._execute_tool("git_status", {})
+            self.assertIn("error", result)
 
     def test_agent_mode_exposes_approval_gated_change_tools(self):
         with tempfile.TemporaryDirectory() as td:
@@ -155,6 +230,9 @@ class AgentEngineTests(unittest.TestCase):
             names = [item["function"]["name"] for item in engine.available_tools()]
             self.assertIn("propose_change", names)
             self.assertIn("propose_command", names)
+            self.assertIn("project_review_file", names)
+            self.assertIn("project_review_workspace", names)
+            self.assertIn("project_select_tests", names)
 
     def test_free_provider_presets_are_available_by_default(self):
         self.assertEqual(AgentConfig().provider, "OpenRouter Free")
@@ -521,3 +599,54 @@ class AgentEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_debug_tools_parse_error_context_and_stack_without_execution(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "player.gd").write_text("extends Node\nfunc move():\n    pass\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask", scope="all"))
+            err = "res://player.gd:3 - Parse Error: Unexpected token\n  File \"src.py\", line 7, in run"
+            parsed = engine._execute_tool("debug_analyze_error", {"error_text": err})
+            self.assertEqual(parsed["diagnostics"][0]["line"], 3)
+            self.assertEqual(parsed["source_contexts"][0]["context"]["focus_line"], 3)
+            frames = engine._execute_tool("debug_parse_stack_trace", {"stack_trace": err})
+            self.assertEqual(frames["frames"][0]["line"], 7)
+            excerpt = engine._execute_tool("debug_source_context", {"path": "player.gd", "line": 2})
+            self.assertTrue(any(row["focus"] for row in excerpt["excerpt"]))
+
+    def test_project_select_tests_reads_git_status_and_never_executes_commands(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "ai_agent.py"
+            source.write_text("def run(): pass\\n", encoding="utf-8")
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_ai_agent.py").write_text("from ai_agent import run\\n", encoding="utf-8")
+            subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "tests@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "OpenGDS Tests"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "baseline"], check=True, capture_output=True)
+            source.write_text("def run(): return 1\\n", encoding="utf-8")
+            engine = AgentEngine(root, AgentConfig(agent_mode="ask", scope="all"))
+            result = engine._execute_tool("project_select_tests", {})
+            self.assertEqual([row["path"] for row in result["selected_tests"]], ["tests/test_ai_agent.py"])
+            self.assertTrue(result["commands"][0]["approval_required"])
+            self.assertFalse(result["full_suite_recommended"])
+            self.assertEqual(source.read_text(encoding="utf-8"), "def run(): return 1\\n")
+
+    def test_project_review_tools_available_and_restrict_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"bad.py").write_text("eval(x)\n# TODO\n",encoding="utf-8")
+            engine=AgentEngine(root,AgentConfig(agent_mode="ask",scope="all"))
+            names=[row["function"]["name"] for row in engine.available_tools()]
+            self.assertIn("project_review_file",names)
+            self.assertIn("project_review_workspace",names)
+            review=engine._execute_tool("project_review_file",{"path":"bad.py"})
+            self.assertEqual(review["counts"]["high"],1)
+            workspace=engine._execute_tool("project_review_workspace",{"limit":5})
+            self.assertEqual(workspace["counts"]["low"],1)
+            blocked=engine._execute_tool("project_review_file",{"path":".env"})
+            self.assertIn("error",blocked)

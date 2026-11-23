@@ -96,6 +96,8 @@ from logging_system import CATEGORY_COLORS, configure_logging, close_logging, lo
 from project_ops import compile_project, decompile_project, validate_project_with_godot as godot_validate_project, godot_check_command, OperationSummary, iter_project_files
 from archive_tools import read_pck, pck_report, extract_pck, zip_report, extract_zip, ArchiveError, looks_like_pck_or_executable
 from ai_panel import AIAgentDock
+from ide_control import IDEControlBridge
+from ide_ipc import IDEControlIPCServer
 from git_panel import GitDock
 from app_info import APP_NAME, VERSION, DEVELOPER
 
@@ -681,6 +683,8 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(icon_file)))
         self.resize(1520, 960)
         self.settings = QSettings("OpenGDS", "IDE")
+        self.ide_control = IDEControlBridge(self)
+        self.ide_control_ipc = None
         self.log_path = configure_logging(log_directory() / "opengds-ide.log")
         self.log_signal = LogSignal(self)
         self.log_signal.record.connect(self.render_log_record)
@@ -893,6 +897,7 @@ class MainWindow(QMainWindow):
         self.ai_dock = AIAgentDock(
             self.settings, self.project_root, self.current_editor, self,
             backend_getter=self.ensure_backend, open_path=self.open_path,
+            ide_controller=self.ide_control,
         )
         self.ai_dock.setObjectName("panel.aiAssistant")
         self.git_dock = GitDock(self.project_root, self.log, self)
@@ -1179,6 +1184,14 @@ class MainWindow(QMainWindow):
         view.addAction(self.act("Focus AI Assistant", lambda: self.set_dock_visible(self.ai_dock_widget, True), "Ctrl+Shift+A"))
 
         tools = self.menuBar().addMenu("Tools")
+        self.external_mcp_gui_action = QAction(
+            "Allow external MCP IDE navigation (local, view-only; this session)", self
+        )
+        self.external_mcp_gui_action.setCheckable(True)
+        self.external_mcp_gui_action.setChecked(False)
+        self.external_mcp_gui_action.toggled.connect(self.set_external_mcp_gui_enabled)
+        tools.addAction(self.external_mcp_gui_action)
+        tools.addSeparator()
         tools.addAction(self.act("Settings…", self.open_settings, "Ctrl+,"))
         tools.addAction(self.act("Launch Godot Editor for Project…", self.launch_godot_editor))
         tools.addAction(self.act("Run Custom Godot CLI Arguments…", self.run_custom_godot_command))
@@ -1239,6 +1252,48 @@ class MainWindow(QMainWindow):
     def toggle_theme(self):
         self.settings.setValue("theme", "light" if self.settings.value("theme", "dark") == "dark" else "dark")
         self.apply_theme()
+
+    def set_external_mcp_gui_enabled(self, enabled: bool):
+        """Start or stop the explicitly enabled, local-only MCP navigation bridge."""
+        if enabled:
+            try:
+                if not self.project_root():
+                    raise RuntimeError("Open a project before enabling external MCP IDE navigation.")
+                server = IDEControlIPCServer(self.ide_control)
+                details = server.start()
+            except Exception as exc:
+                self.external_mcp_gui_action.blockSignals(True)
+                self.external_mcp_gui_action.setChecked(False)
+                self.external_mcp_gui_action.blockSignals(False)
+                self.log(f"External MCP IDE navigation was not enabled: {exc}",
+                         category="AI", level=logging.WARNING)
+                QMessageBox.warning(
+                    self, "External MCP IDE navigation",
+                    "The authenticated local bridge could not start. Unlock or configure the OS keyring, then try again.\n\n"
+                    + str(exc),
+                )
+                return
+            self.ide_control_ipc = server
+            self.log(
+                f"External MCP IDE navigation enabled on 127.0.0.1:{details['port']} "
+                "(OS-keyring authenticated; view/navigation actions only)",
+                category="AI",
+            )
+            self.statusBar().showMessage(
+                "External MCP navigation enabled for this session — local and view-only", 7000
+            )
+            return
+
+        server = self.ide_control_ipc
+        self.ide_control_ipc = None
+        if server is not None:
+            try:
+                server.stop()
+            except Exception as exc:
+                self.log(f"Could not cleanly stop external MCP navigation: {exc}",
+                         category="AI", level=logging.WARNING)
+            self.log("External MCP IDE navigation disabled", category="AI")
+            self.statusBar().showMessage("External MCP navigation disabled", 5000)
 
     def current_editor(self):
         widget = self.tabs.currentWidget()
@@ -3507,6 +3562,18 @@ class MainWindow(QMainWindow):
                     if widget.document().isModified():
                         event.ignore()
                         return
+        if self.ide_control_ipc is not None:
+            server = self.ide_control_ipc
+            self.ide_control_ipc = None
+            try:
+                server.stop()
+            except Exception as exc:
+                self.log(f"Could not cleanly stop external MCP navigation: {exc}",
+                         category="AI", level=logging.WARNING)
+            if hasattr(self, "external_mcp_gui_action"):
+                self.external_mcp_gui_action.blockSignals(True)
+                self.external_mcp_gui_action.setChecked(False)
+                self.external_mcp_gui_action.blockSignals(False)
         self.settings.setValue("geometry", self.saveGeometry())
         # QMainWindow state includes dock positions, tabification, visibility,
         # floating status and floating-window geometry for every named dock.
@@ -3583,6 +3650,14 @@ def main() -> int:
         window.show()
         window.raise_()
         window.activateWindow()
+        if os.environ.get("OPENGDS_GUI_SMOKE", "").strip() == "1":
+            # CI launches the frozen executable with the offscreen Qt platform,
+            # constructs the real main window, processes initial events and
+            # closes cleanly without entering the interactive event loop.
+            app.processEvents()
+            window.close()
+            app.processEvents()
+            return 0
         return int(app.exec())
     except KeyboardInterrupt:
         return 130

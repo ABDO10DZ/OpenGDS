@@ -132,7 +132,7 @@ class AgentSettingsDialog(QDialog):
         self.base_url = QLineEdit(str(settings.value("ai/base_url", PROVIDERS[current_provider]["base_url"])))
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText("Paste your provider key · stored for this Windows user")
+        self.api_key.setPlaceholderText("Paste your provider key · stored in your operating-system keychain")
         self.key_note = QLabel()
         self.key_note.setWordWrap(True)
         self.key_link = QPushButton("Get API key…")
@@ -182,7 +182,7 @@ class AgentSettingsDialog(QDialog):
             self.model.setText(preset.get("default_model", ""))
         requires_key = preset.get("requires_api_key", True)
         self.api_key.setEnabled(requires_key)
-        self.api_key.setPlaceholderText("Not required for local Ollama" if not requires_key else "Paste your provider key · stored for this Windows user")
+        self.api_key.setPlaceholderText("Not required for local Ollama" if not requires_key else "Paste your provider key · stored in your operating-system keychain")
         self.key_link.setEnabled(bool(preset.get("signup_url")))
         self.key_note.setText(f"{preset.get('tier', 'Custom')}\n{preset.get('note', '')}")
 
@@ -409,7 +409,7 @@ class AgentChangeReviewDialog(QDialog):
 
 
 class AIAgentDock(QWidget):
-    def __init__(self, settings, workspace_getter, editor_getter, parent=None, *, backend_getter=None, open_path=None):
+    def __init__(self, settings, workspace_getter, editor_getter, parent=None, *, backend_getter=None, open_path=None, ide_controller=None):
         super().__init__(parent)
         self.setWindowTitle("AI ASSISTANT")
         self.settings = settings
@@ -417,6 +417,7 @@ class AIAgentDock(QWidget):
         self.editor_getter = editor_getter
         self.backend_getter = backend_getter
         self.open_path = open_path
+        self.ide_controller = ide_controller
         self.credentials = CredentialStore()
         self.engine: AgentEngine | None = None
         self.engine_root: Path | None = None
@@ -530,6 +531,17 @@ class AIAgentDock(QWidget):
         review_hint.setWordWrap(True)
         changes_layout.addWidget(review_hint)
         self.pages.addTab(changes_page, "Changes · 0")
+
+        plan_page = QWidget()
+        plan_layout = QVBoxLayout(plan_page)
+        plan_layout.setContentsMargins(8, 8, 8, 8)
+        self.task_plan_view = QTextBrowser()
+        self.task_plan_view.setObjectName("assistantTaskPlan")
+        self.task_plan_view.setOpenExternalLinks(True)
+        self.task_plan_view.setHtml("<p>When the agent creates a task plan, it will appear here for review.</p>")
+        plan_layout.addWidget(self.task_plan_view, 1)
+        self.pages.addTab(plan_page, "Task Plan")
+
         root.addWidget(self.pages, 1)
 
         composer = QFrame()
@@ -847,8 +859,10 @@ class AIAgentDock(QWidget):
         config = self._config()
         if self.engine is None or self.engine_root != root:
             backend = self.backend_getter() if self.backend_getter else None
-            self.engine = AgentEngine(root, config, credential_store=self.credentials, backend=backend)
+            self.engine = AgentEngine(root, config, credential_store=self.credentials, backend=backend,
+                                      ide_controller=self.ide_controller)
             self.engine_root = root
+            self._refresh_task_plan()
         else:
             self.engine.config = config
         return self.engine
@@ -1094,6 +1108,7 @@ class AIAgentDock(QWidget):
 
     def _worker_finished(self, answer: str):
         self._append_message("Assistant", answer)
+        self._refresh_task_plan()
         current_ids = {action.action_id for action in self.engine.pending_actions()} if self.engine else set()
         new_ids = current_ids - self._pending_before_request
         approval_language = bool(re.search(r"\b(approve|accept)\b.{0,100}\b(change|proposal|patch|edit)\b", answer, re.IGNORECASE))
@@ -1108,6 +1123,29 @@ class AIAgentDock(QWidget):
             # on a completed chat response with the review tab hidden.
             self.pages.setCurrentIndex(1)
         log_event("AI", logging.INFO, "AI assistant completed a streamed response")
+
+    def _refresh_task_plan(self):
+        plan = self.engine.task_plan if self.engine else None
+        if not plan:
+            self.task_plan_view.setHtml("<p>No task plan has been created for this workspace yet.</p>")
+            return
+        rows = [
+            f"<h3>{html.escape(plan.get('goal', 'Task plan'))}</h3>",
+            f"<p><b>Status:</b> {html.escape(plan.get('status', 'planned'))} "
+            f"· <b>Plan ID:</b> {html.escape(plan.get('id', ''))}</p>",
+            "<ol>",
+        ]
+        for step in plan.get("steps", []):
+            title = html.escape(str(step.get("title", "")))
+            description = html.escape(str(step.get("description", "")))
+            task_id = html.escape(str(step.get("task_id") or "manual step"))
+            status = html.escape(str(step.get("status", "planned")))
+            exit_code = step.get("exit_code")
+            result_label = f" · exit code {int(exit_code)}" if isinstance(exit_code, int) else ""
+            rows.append(f"<li><b>{title}</b> <span>({status}{result_label})</span>"
+                        f"<br>{description}<br><i>Validation task: {task_id}</i></li>")
+        rows.extend(["</ol>", f"<p>{html.escape(plan.get('execution_policy', ''))}</p>"])
+        self.task_plan_view.setHtml("".join(rows))
 
     def _open_new_proposal_files(self):
         if not self.engine or not self.open_path:
@@ -1377,6 +1415,7 @@ class AIAgentDock(QWidget):
         if changed_paths and owner is not None and hasattr(owner, "reload_agent_files"):
             owner.reload_agent_files(changed_paths)
         self.refresh_pending()
+        self._refresh_task_plan()
         self.send_button.setEnabled(True)
         for button in self.approval_buttons:
             button.setEnabled(True)

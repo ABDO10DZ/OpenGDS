@@ -172,6 +172,107 @@ The included tests cover compiler/decompiler round trips, info reports, core err
 - Godot integration depends on the installed engine version and export templates/presets. A configured executable does not guarantee a target export template exists.
 - No local runtime smoke test was possible in the packaging environment.
 
+## AI tools, OpenGDS Core and MCP
+
+The built-in AI agent can use the IDE itself through a small allow-listed Qt bridge:
+- Read the active workspace, active editor, cursor position and open tabs.
+- Open an existing workspace-relative file.
+- Navigate the active editor to a line and column.
+- Show Explorer, Source Control, Code Insight, AI Assistant or Output panels.
+
+These UI actions run on the Qt GUI thread. They are navigation/view operations only; file writes and command execution continue through the existing proposal-and-approval workflow.
+
+### Architecture tracing and change-impact estimates
+
+The AI can produce a static architecture inventory (`project_architecture_summary`), trace symbol names to indexed files (`project_trace_symbol`), and estimate candidate files affected by a change (`project_change_impact`). The impact estimate combines shared declarations and symbol-name matches. It is deliberately labeled heuristic: it is not a complete dependency graph, call graph, or proof of runtime impact. Refresh the index before analysis when the workspace has changed.
+
+### Persistent project intelligence
+
+The AI agent can build an incremental local symbol index with `project_index_refresh`, inspect its size with `project_index_status`, search declarations/references with `project_symbol_search`, and discover files sharing symbols via `project_related_files`. The index is stored in the user's OS cache (outside the workspace), persists between IDE sessions, and refreshes changed files using file metadata. It stores only symbol names, file paths, line numbers, hashes and metadata—not source contents. Indexing is bounded (5,000 files; 200 KB per file), respects assistant focus, excludes credential paths and common build/cache folders, and does not follow symlinks. Python symbols use AST; other supported languages use conservative declaration patterns, so results are navigational hints rather than a full language semantic graph.
+
+### Git-aware development
+
+The built-in AI agent now has two additional read-only Git tools:
+- `git_status` reports the repository branch and changed workspace paths, omitting common credential files and secret directories.
+- `git_diff` reads a bounded diff for one workspace-relative file against `HEAD`.
+
+The agent can inspect existing user changes before proposing edits, then re-check the diff after the user approves changes. These tools do not stage, commit, reset, checkout, or push anything. Git operations are invoked with fixed argument arrays (no shell) and require the active workspace to be the repository root.
+
+### Project-aware test and build discovery
+
+The agent exposes `detect_project_tasks` in both Ask and Agent modes. It inspects known manifests and project markers to suggest supported checks for Python/unittest/pytest, npm test scripts, Rust, CMake/CTest and Godot headless editor scans. Discovery does not execute scripts or commands and does not evaluate arbitrary manifest hooks. Returned commands are fixed argument arrays; the agent must submit a selected command through `propose_command`, which remains blocked until the user approves it. The agent can then inspect the real command output and report the result; discovery alone is never reported as a passing test.
+
+### Visible task planning
+
+For multi-step work, the agent can create a bounded plan (up to eight steps) linked to discovered validation tasks. The plan appears in the AI panel's **Task Plan** tab with its goal, ordered steps, and execution policy. Plans are workspace-scoped and reset when the active workspace changes. Creating a plan is non-destructive; each proposed command remains a separate approval decision. The agent is instructed to inspect actual command output and report a passing check only when the approved process exits successfully.
+Validation proposals may reference a plan task ID. After the user approves that command, the IDE records its actual exit code and updates the matching plan step to passed or failed; an unapproved proposal never counts as a completed check.
+
+The normal Agent workflow remains approval-gated: file changes and test/build commands are proposals; commands run only after the user approves them. The agent must report actual test output rather than treating a proposed command as a successful test.
+
+### OpenGDS MCP server
+
+OpenGDS-IDE also includes an optional Model Context Protocol (MCP) server for external MCP-compatible clients. Install it separately:
+
+```bash
+python -m pip install -r requirements-mcp.txt
+python mcp_server.py --workspace /absolute/path/to/project
+```
+
+An MCP client can launch that command over stdio. Example client configuration:
+
+```json
+{
+  "mcpServers": {
+    "opengds": {
+      "command": "python",
+      "args": [
+        "/absolute/path/OpenGDS-IDE/mcp_server.py",
+        "--workspace",
+        "/absolute/path/to/project"
+      ]
+    }
+  }
+}
+```
+
+The MCP server exposes the six core/file tools `list_project_files`, `read_project_file`, `search_project_text`, `inspect_gdsc`, `decompile_preview`, and `compile_check`, plus the same static project-intelligence helpers available to the built-in agent:
+
+- **Persistent symbol index:** `refresh_project_index`, `project_index_status`, `search_project_symbols`, `summarize_project_architecture`, `trace_project_symbol`, `related_project_files`, and `estimate_change_impact`. It shares the OS-cache index format with the IDE and stores symbol names, kinds, paths, line numbers, hashes and metadata—not source text.
+- **Static review:** `review_source_file` and bounded `review_workspace`, with common credential/token patterns redacted from returned snippets.
+- **Debugging:** `analyze_project_error` parses pasted diagnostics/stack traces, returns only validated workspace-relative source locations and bounded excerpts, redacts common secrets, and omits external paths.
+- **Validation planning:** `discover_validation_tasks` identifies supported project tasks without executing them; `select_relevant_tests` ranks likely Python tests from an explicit bounded list of changed paths. Both return suggestions only.
+
+The MCP server calls the same `OpenGDSBackend` adapter used by the desktop IDE. Decompile returns an in-memory preview; compile validation writes only to a temporary directory and returns the artifact hash. Neither operation changes workspace files. The symbol index is stored in the OS user cache outside the workspace, and index refresh is bounded to 5,000 files and 200 KB per file. Static review is limited to 100 files and 200 findings per request; error text is limited to 100 KB.
+
+MCP intentionally does not expose arbitrary shell execution, arbitrary Python scripts, direct workspace writes, or destructive GUI actions. Discovered build/test commands are never run by MCP. The built-in IDE agent retains its proposal-and-approval workflow for edits and commands. The MCP server is a separate stdio process. Live GUI navigation is disabled by default for external clients and can be explicitly enabled for the current session using the authenticated, view-only bridge described below; the built-in assistant uses the Qt bridge directly.
+
+### MCP resources and prompts
+
+External MCP clients can also read three bounded resources:
+
+| Resource URI | Contents |
+|---|---|
+| `opengds://workspace/overview` | Index status, up to 200 eligible file paths, available capabilities and safety boundaries; no source contents or absolute workspace/cache path. |
+| `opengds://workspace/architecture` | Current indexed architecture summary and index status. Refresh the index first or after workspace changes. |
+| `opengds://workspace/validation` | Detected validation tasks and command suggestions; nothing is executed. |
+
+Four reusable MCP prompts guide common workflows: `analyze_gdsc(path)`, `debug_project_error(error_text)`, `review_source_change(path)`, and `plan_validation(changed_paths)`. They instruct the client to call the relevant tools and distinguish evidence from heuristics. Prompt arguments are validated against workspace path rules; diagnostic text is redacted and capped before inclusion. Prompts only provide instructions—they do not execute tools by themselves.
+
+Resources expose bounded summaries, not arbitrary file reads. All resource and prompt behavior preserves the MCP server's read-only workspace policy; the only generated compile artifact remains temporary and outside the workspace.
+
+### Optional external MCP control of the live IDE
+
+The stdio MCP server can optionally navigate a running OpenGDS-IDE window. In the GUI, open **Tools → Allow external MCP IDE navigation (local, view-only; this session)** and enable it for the current session. This setting is off by default and is automatically disabled when the IDE closes.
+
+When enabled, the MCP server adds six tools:
+
+- `ide_get_state`, `ide_get_diagnostics`, and `ide_get_debug_state` read bounded editor, Problems-panel and Godot debugger metadata.
+- `ide_open_file`, `ide_go_to_line`, and `ide_focus_panel` perform allow-listed navigation and panel visibility actions.
+
+The IPC endpoint binds only to `127.0.0.1`. A random per-session token is held in the operating-system keyring; the local discovery file contains endpoint metadata only, not the token. The client authenticates the endpoint and supplies an opaque SHA-256 workspace identifier. The IDE verifies it on the Qt thread in the same operation that performs the requested action, preventing a project switch between a preflight check and navigation. Requests are size-limited and restricted to the six view/navigation actions; the existing IDE bridge marshals GUI work onto Qt's thread and applies its workspace path, symlink and sensitive-file checks.
+
+No file edit, delete, shell command, arbitrary Python execution, Godot debugger stepping/continue/stop, or other execution-control API is exposed through this bridge. A client must use the same OS user/keyring and have the matching project open in the IDE. If the OS keyring is unavailable, the bridge remains disabled. Install the optional server dependencies (including `keyring`) using `python -m pip install -r requirements-mcp.txt`.
+
 ## AI assistant
 
 The AI assistant is a detachable, closable native dock with explicit Ask/Agent modes and three focus scopes: **GDScript & Godot** (default), **OpenGDS core**, and **General coding**. The selected focus constrains the files the agent can list, read, search, and propose edits for; an active editor buffer outside the selected focus is excluded.
@@ -198,7 +299,9 @@ The first provider presets are free-to-start options for evaluation:
 
 Free tiers are controlled by their providers, can change or be withdrawn, may have quotas, and may have data-use terms that differ from paid plans. The application does not embed or supply API keys. Review each provider's current terms before sending private source code. Tool-calling support can differ between models, so Ask/Agent capabilities depend on the selected model. In Agent mode, explicit edit requests require a reviewable tool proposal; if a model returns prose without queuing an action, the UI clearly reports that no file was modified. Non-overlapping edits made after a proposal are merged safely; overlapping edits remain blocked and require a fresh read/proposal rather than overwriting user work.
 
-Bring-your-own-key presets are also available for OpenAI, Claude, DeepSeek, z.ai, standard OpenRouter and custom OpenAI-compatible endpoints. API usage may be billed separately by the provider. Windows credentials are encrypted for the current user using DPAPI and stored outside the project under `%USERPROFILE%\.opengds-ide\secrets`. Keys are not written to project files or application logs.
+Bring-your-own-key presets are also available for OpenAI, Claude, DeepSeek, z.ai, standard OpenRouter and custom OpenAI-compatible endpoints. API usage may be billed separately by the provider. API keys are stored through the operating-system keyring: Windows Credential Manager, macOS Keychain, or Linux Secret Service. Earlier Windows DPAPI credentials are migrated to the system keyring when first accessed on the original Windows account. If a secure keyring is unavailable, persistent storage is refused; `OPENGDS_AI_API_KEY` remains available as a session-only fallback. Keys are never written to plaintext project files or application logs.
+
+Provider transport is isolated in `ai_providers.py` (OpenAI-compatible and Anthropic wire protocols), while `ai_models.py` holds explicit model capability metadata. Unknown capabilities remain unspecified rather than inferred from model names. The agent retains responsibility for conversation/tool loops, workspace boundaries, and approval-gated actions.
 
 Workspace access is limited to eligible text files under the open workspace. Known credential/certificate files, VCS metadata, cache folders, build output and symbolic links are excluded. File proposals are checked against the original file hash before applying to avoid overwriting changes made since the proposal. Commands are launched as an argument array (not through a shell) only after approval; an approved command may still access resources outside the workspace, so inspect it before approving.
 
@@ -213,3 +316,48 @@ The Explorer overlays three small status indicators on the existing file/folder 
 Commit identity is collected per repository when first needed. Every **Push** action requires a separate publish confirmation. For GitHub remotes, every push first presents an authentication choice: sign in through GitHub CLI (`gh`) or continue with already configured Git Credential Manager/SSH credentials, followed by a separate publish confirmation. GitHub CLI is optional; Git and GitHub CLI are not bundled. Other remotes use the user's configured Git Credential Manager or SSH credentials. Fetch, pull, push, remote management, branch operations, clone and repository initialization are available in the `⋯` menu.
 
 Discard actions require a confirmation because they remove uncommitted work. Remote pushes are never triggered just by opening a repository or committing locally.
+
+
+## Automated debugging & root-cause triage
+
+The AI agent has read-only debugging helpers: `debug_analyze_error` parses pasted compiler/runtime diagnostics and maps safe workspace file/line references to bounded source excerpts; `debug_parse_stack_trace` extracts stack frames; and `debug_source_context` reads a small excerpt around a line. These tools do not execute code or change files. Analysis is heuristic: error text and excerpts are evidence, not a verified root-cause determination. Suggested tests/build commands are discovered separately and require explicit approval before execution.
+
+
+## Lightweight static code review
+
+AI tools `project_review_file` and `project_review_workspace` perform a bounded, read-only heuristic scan for dynamic evaluation/execution, shell-enabled subprocess calls, unsafe pickle loading, swallowed bare exceptions, and TODO/FIXME markers. Workspace scans are capped, respect Focus, and block credential/excluded paths and symlinks. Findings include severity, line and snippet; they may be false positives and are not a security certification. The tools do not execute commands or modify files.
+
+
+## Change-aware test selection
+
+The AI agent exposes `project_select_tests`. It reads the current Git change list (or accepts an explicit bounded list of workspace-relative paths), scans up to 1,000 bounded Python test files, and ranks likely matches using paired test filenames and source references. It recognizes pytest configuration and otherwise uses Python's standard unittest runner. Project-wide dependency, build, test configuration or CI workflow changes, missing mappings, and more than eight likely matches recommend the full suite rather than focused tests. Commands are suggestions only; each must pass through `propose_command` and receive explicit user approval. The selector is heuristic and currently targets Python `unittest`/pytest test files; it does not prove test coverage or infer arbitrary language-level dependencies.
+
+
+## Live IDE diagnostics for AI
+
+When the Qt IDE bridge is attached, Ask and Agent modes expose `ide_get_diagnostics`. It reads up to 100 structured entries from the Problems panel, returns workspace-relative file/line/column locations, and redacts named credential assignments, bearer strings, common raw API-key prefixes (OpenAI/GitHub/Google/Slack/AWS), and JWT-shaped values. It does not read raw log files or arbitrary console text. External or live diagnostics can then be paired with `debug_source_context`, symbol tracing and the existing review/validation workflow. File changes and commands remain approval-gated.
+
+
+## Live Godot debugger context for AI
+
+When the IDE bridge is attached, `ide_get_debug_state` reads the current Godot DAP connection state, up to 50 safe call-stack source locations, and up to 200 workspace breakpoints. It filters paths outside the project and sensitive locations. It intentionally does not expose local variable values or send execution-control commands. The agent can use the returned file/line references with `ide_open_file`, `ide_go_to_line` and `debug_source_context` to investigate a paused runtime session while the developer retains control of stepping, continuing and stopping execution.
+
+
+### PySide6 runtime compatibility
+
+OpenGDS-IDE currently constrains PySide6 to `>=6.7,<6.12`. Qt's PySide6 6.12.0 wheels have a documented CPython 3.10/3.11 reference-count regression in `Signal.emit()` that can terminate the process with `bool_dealloc`. Keep the upper bound until a corrected Qt for Python release is available and validated. The test suite includes a direct `sys.getrefcount(True)` regression check over repeated signal emissions on affected Python versions.
+
+
+## Build native desktop packages
+
+The same PyInstaller spec now selects the native packaging format for the host operating system:
+
+| Host | Output | Format |
+|---|---|---|
+| Windows x64 | `dist/OpenGDS-IDE.exe` | Single-file GUI executable with embedded icon |
+| Linux x64 | `dist/OpenGDS-IDE/` | One-folder application with the executable and bundled Qt/runtime dependencies |
+| macOS | `dist/OpenGDS-IDE.app` | Native application bundle with an `Info.plist` and generated `.icns` icon |
+
+On Windows, install 64-bit Python 3.12 and run `build_gui.bat`. On Linux or macOS, run `bash build_gui.sh`. Both scripts create an isolated build environment, install the pinned runtime requirements and PyInstaller, run the full tests, build the frozen application, and execute `tests/smoke_frozen_bundle.py`. The smoke test launches the packaged executable's real Qt main window in offscreen mode, closes it, then exercises the embedded core through compile, GDSC inspection and decompile round-trip.
+
+The GitHub Actions matrix builds and smoke-tests all three native formats on their matching operating systems, verifies frozen GUI startup and the embedded GDSC round-trip, then uploads each verified bundle as a platform-specific Actions artifact (seven-day retention). The macOS app is currently an unsigned development bundle; Developer ID signing, notarization and installer/disk-image publishing are separate release operations. Godot remains an external runtime dependency for live engine, LSP and DAP workflows.

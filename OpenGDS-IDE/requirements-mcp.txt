@@ -1,0 +1,4 @@
+# Optional dependency for the OpenGDS Model Context Protocol server.
+# Install separately from the desktop IDE runtime:
+mcp>=1.0,<2
+keyring>=25.0,<27
