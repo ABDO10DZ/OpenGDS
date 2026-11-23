@@ -72,6 +72,15 @@ jobs:
           test -n "$REAL_GDC"
           python tests/verify_real_gdsc.py "$REAL_GDC"
 
+          mkdir -p "$RUNNER_TEMP/real-legacy/out"
+          "$GDRE_BIN" --headless \
+            --compile="$RUNNER_TEMP/real-v100/main.gd" \
+            --bytecode=3.5.0 \
+            --output="$RUNNER_TEMP/real-legacy/out"
+          LEGACY_GDC="$(find "$RUNNER_TEMP/real-legacy/out" -type f -name '*.gdc' | head -n 1)"
+          test -n "$LEGACY_GDC"
+          python tests/verify_real_legacy_gdsc.py "$LEGACY_GDC" "$GDRE_BIN"
+
   android-compile:
     name: Android Kotlin/Gradle compile
     runs-on: ubuntu-latest
