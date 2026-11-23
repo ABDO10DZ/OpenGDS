@@ -15,17 +15,48 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ide:
-          - OpenGDS-IDE
-          - OpenGDS-IDE-Android
+        include:
+          - ide: OpenGDS-IDE
+            python_path: .
+          - ide: OpenGDS-IDE-Android
+            python_path: app/src/main/python
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Compile Python adapter and tests
+      - name: Compile Python sources
         working-directory: ${{ matrix.ide }}
-        run: python -m py_compile gdsc_compat.py tests/test_gdsc_compat.py
+        env:
+          PYTHONPATH: ${{ matrix.python_path }}
+          IDE_FOLDER: ${{ matrix.ide }}
+        run: |
+          if [ "$IDE_FOLDER" = "OpenGDS-IDE" ]; then
+            python -m compileall -q .
+          else
+            python -m py_compile app/src/main/python/gdsc_compat.py app/src/main/python/opengds_bridge.py tests/test_gdsc_compat.py
+          fi
       - name: Run compatibility regression tests
         working-directory: ${{ matrix.ide }}
+        env:
+          PYTHONPATH: ${{ matrix.python_path }}
         run: python -m unittest discover -s tests -p "test_gdsc_compat.py" -v
+
+  android-compile:
+    name: Android Kotlin/Gradle compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+      - name: Compile Android debug Kotlin
+        working-directory: OpenGDS-IDE-Android
+        run: gradle --no-daemon :app:compileDebugKotlin
