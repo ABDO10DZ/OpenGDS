@@ -612,7 +612,7 @@ class SettingsDialog(QDialog):
         if target_version not in (0, 100, 101): target_version = 101
         self.compile_bytecode_version.setCurrentIndex(max(0, self.compile_bytecode_version.findData(target_version)))
         self.compile_engine_version = QLineEdit(str(project.get("compile", {}).get("engine_version", "")))
-        self.compile_engine_version.setPlaceholderText("Required for legacy, e.g. 3.5.0")
+        self.compile_engine_version.setPlaceholderText("Required for GDRE targets, e.g. 3.5.0 or 4.3.0")
         self.compressed = QCheckBox("Compress compiled GDSC output"); self.compressed.setChecked(project.get("compile", {}).get("compressed", True))
         self.overwrite = QCheckBox("Allow overwriting compiled output"); self.overwrite.setChecked(project.get("compile", {}).get("overwrite", False))
         self.continue_error = QCheckBox("Continue compiling other files after an error"); self.continue_error.setChecked(project.get("compile", {}).get("continue_on_error", True))
@@ -620,10 +620,10 @@ class SettingsDialog(QDialog):
         self.validate_after_compile = QCheckBox("Offer Godot --check-only validation after project compilation")
         self.validate_after_compile.setChecked(project.get("compile", {}).get("validate_with_godot", True))
         cf.addRow("Target bytecode", self.compile_bytecode_version)
-        cf.addRow("Legacy engine version", self.compile_engine_version)
+        cf.addRow("GDRE engine version", self.compile_engine_version)
         cf.addRow("Tokenizer tab size", self.compile_tab_size); cf.addRow(self.compressed); cf.addRow(self.overwrite); cf.addRow(self.continue_error)
         cf.addRow("Project output directory", self.compile_output); cf.addRow(self.validate_after_compile)
-        compile_note = QLabel("v101 targets Godot 4.5+; v100 targets Godot 4.3–4.4. Select Legacy — GDRE Tools and enter the exact engine version (for example 3.5.0) to compile Godot 1.x–3.x bytecode. Install GDRE Tools and configure GDRE_TOOLS or PATH. Godot --check-only performs engine parser/type validation.")
+        compile_note = QLabel("v101 targets Godot 4.5+; v100 targets Godot 4.3–4.4. Select GDRE Tools and enter an exact engine version or commit (for example 3.5.0, 4.3.0, or a commit hash) to target legacy or development bytecode. Install GDRE Tools and configure GDRE_TOOLS or PATH. Godot --check-only performs engine parser/type validation.")
         compile_note.setWordWrap(True); cf.addRow(compile_note)
         tabs.addTab(compiler, "Compiler")
 
