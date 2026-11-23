@@ -42,6 +42,15 @@ def main() -> int:
     if compat._signature(decoded) != compat._signature(rebuilt):
         raise SystemExit("real GDSC v100 did not survive decompile/recompile token round-trip")
 
+    source_text = source_path.read_text(encoding="utf-8")
+    native_source = core.compile_gd(source_text, compress=False, tab_size=4)
+    compressed_v100 = compat.encode_v100(native_source, core, compressed=True)
+    compressed_header, compressed_decoded = compat.decode_compatible(compressed_v100, core)
+    if compressed_header.version != 100:
+        raise SystemExit("compressed adapter output has the wrong GDSC version")
+    if compat._signature(decoded) != compat._signature(compressed_decoded):
+        raise SystemExit("compressed v100 adapter output differs from the GDRE sample")
+
     with tempfile.TemporaryDirectory(prefix="opengds-real-v100-") as temp:
         adapter_output = Path(temp) / "gdre-adapter" / "adapter-output.gdc"
         adapter_file = compat.compile_legacy_file(
@@ -64,6 +73,7 @@ def main() -> int:
     print("REAL_CORE_VALIDATION=PASS")
     print("DECOMPILE_RECOMPILE_ROUND_TRIP=PASS")
     print("GDRE_ADAPTER_COMPILE=PASS")
+    print("COMPRESSED_V100_ROUND_TRIP=PASS")
     return 0
 
 
