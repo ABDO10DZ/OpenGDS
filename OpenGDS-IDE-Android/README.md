@@ -4,13 +4,13 @@
 **Package:** `com.ABDO10DZ.OpenGDS`  
 **Version:** 1.0.3
 
-OpenGDS IDE is an Android Godot/GDScript workbench for inspecting GDSC v101 bytecode, decompiling `.gdc` files to editable `.gd`, compiling edited scripts, rebuilding supported Godot PCK archives, and exporting rebuilt APK archive(s).
+OpenGDS IDE is an Android Godot/GDScript workbench for inspecting GDSC v100/v101 bytecode and identifying legacy Godot 1.x–3.x revisions, decompiling `.gdc` files to editable `.gd`, compiling edited scripts, rebuilding supported Godot PCK archives, and exporting rebuilt APK archive(s).
 
 ## Editor and file browser
 
 - The Editor can start with no APK or imported project. Its rounded **+** menu creates a new GDScript, imports multiple `.gd` / `.gdc` files, imports a project folder, or opens an APK directly into an editable workspace.
 - When no workspace is open, the Editor displays up to 12 recent projects. Reopen an entry, remove only its history record, or permanently delete that workspace and its full stored contents. Deletion is protected by a confirmation dialog.
-- Standalone script workspaces use the same editor, GDSC v101 decompiler/compiler, save, batch operations, and folder export as APK-backed workspaces. APK repacking remains available only when an original APK baseline exists.
+- Standalone script workspaces use the same editor, GDSC v100/v101 compatibility decompiler/compiler, save, batch operations, and folder export as APK-backed workspaces. APK repacking remains available only when an original APK baseline exists.
 - New scripts are created as editable `.gd` files and can be compiled immediately to `.gdc`.
 - Portrait phones use a full-width Files / Editor switch instead of squeezing the editor into a narrow split pane. Wider screens retain a two-pane layout. The editor can expand to fill the available editor area and collapse back to the file browser.
 - The project browser is a folder tree. By default it shows `.gdc` and `.gd` files, including unsupported GDC files (clearly marked); **Show all files** exposes the rest of the workspace.
@@ -18,13 +18,15 @@ OpenGDS IDE is an Android Godot/GDScript workbench for inspecting GDSC v101 byte
 - The code editor derives gutter line numbers and search navigation from Compose's actual text layout, including wrapped visual rows. This avoids estimating source lines from scroll-pixel offsets and keeps the gutter aligned while scrolling or moving the cursor. The UI is locked to left-to-right English layout on Arabic and other RTL system locales.
 - The GDScript editor highlights comments, strings (including triple-quoted strings), annotations, language keywords, literals, common built-in types/constants/functions, and numeric values. Search matches are highlighted independently.
 - The editor uses the platform text-field editing behavior for selection, cursor movement, copy, paste, and undo. Syntax highlighting remains enabled for large files; the lexer scans source linearly and does not change source offsets or editor contents.
-- Valid GDSC v101 files remain read-only until decompiled. Unsupported or invalid `.gdc` files remain visible for inspection/export and are clearly marked as not supported for decompilation.
+- Valid GDSC v100/v101 files remain read-only until decompiled. Unsupported or invalid `.gdc` files remain visible for inspection/export and are clearly marked as not supported for decompilation.
 - Editing and compiling a `.gd` saves the edited source before producing its `.gdc` output. Replacing an imported file or generated output is explicitly controlled by **Replace existing .gd/.gdc outputs** in Settings. Existing files are backed up as `.bak` before replacement.
 
-## GDScript and GDSC v101
+## GDScript and GDSC bytecode compatibility
 
-- The upstream compiler implementation is preserved. Its decoded output is regression-tested against the supplied 1,130-file Godot-produced corpus; the native `dbg` analyzer adds token-reference, source-map, source-line, and delimiter checks. A v101 header alone does not prove semantic acceptance by the target game parser; test changed scripts in the matching engine when possible.
-- Inspect GDSC v101 metadata, audit findings, constants, token disassembly, and decoded-payload hex reports.
+- The upstream compiler implementation is preserved and is not modified by the compatibility layer. Native v101 output is regression-tested against the supplied 1,130-file Godot-produced corpus. The adapter adds v100 (Godot 4.3–4.4) read/write compatibility by translating its payload header and token ids into the current decoder model; the native `dbg` analyzer adds token-reference, source-map, source-line, and delimiter checks. A v101 header alone does not prove semantic acceptance by the target game parser; test changed scripts in the matching engine when possible.
+- Select v100 (Godot 4.3–4.4) or v101 (Godot 4.5+) as the compile target in Settings. The selected version is used by single-file, batch, and repack compilation.
+- Inspect metadata, audit findings, constants, token disassembly, and decoded-payload hex reports for v100/v101 files.
+- Godot 1.x–3.x revisions 3–13 are recognized. Full legacy decompilation/compilation is delegated to GDRE Tools when its executable is installed and available through GDRE_TOOLS or PATH; legacy support is not bundled with the Android app.
 - Run the native **Debug GDC (static)** analyzer: validate token references, source-position maps, line ordering, and delimiter balance; resolve source-line breakpoints to token indices and inspect nearby tokens. It does not launch Godot.
 - Decompile one or all supported GDC files and compile one or all GDScript files.
 - Import multiple standalone `.gd` / `.gdc` files directly from the Editor, with no APK requirement.
