@@ -112,27 +112,34 @@ class IDEControlBridge(QObject):
             raise FileNotFoundError("Workspace file does not exist.")
         return path
 
+    def _safe_editor_relative_path(self, value: object) -> str | None:
+        """Return an open editor path only when it passes the normal navigation guards."""
+        if not value:
+            return None
+        root = self._workspace()
+        try:
+            supplied = Path(str(value)).expanduser()
+            lexical = Path(os.path.abspath(supplied if supplied.is_absolute() else root / supplied))
+            relative = lexical.relative_to(root)
+            self._relative_file(relative.as_posix())
+            return relative.as_posix()
+        except (OSError, ValueError, PermissionError, TypeError):
+            return None
+
     def _execute(self, name: str, args: dict) -> dict:
         window = self.window
         if name == "ide_get_state":
             root = self._workspace()
             editor = window.current_editor()
             active = getattr(editor, "file_path", None) if editor else None
-            active_relative = None
-            if active:
-                try:
-                    active_relative = Path(active).resolve().relative_to(root).as_posix()
-                except ValueError:
-                    active_relative = None
+            active_relative = self._safe_editor_relative_path(active)
             opened = []
             for index in range(window.tabs.count()):
                 widget = window.tabs.widget(index)
                 path = getattr(widget, "file_path", None)
-                if path:
-                    try:
-                        opened.append(Path(path).resolve().relative_to(root).as_posix())
-                    except ValueError:
-                        continue
+                relative = self._safe_editor_relative_path(path)
+                if relative:
+                    opened.append(relative)
             cursor = editor.textCursor() if editor else None
             return {
                 "workspace": root.name,
