@@ -92,7 +92,7 @@ class IDEControlBridge(QObject):
         if not raw or candidate.is_absolute() or windows.is_absolute() or windows.drive or ".." in candidate.parts:
             raise ValueError("IDE file navigation accepts workspace-relative paths only.")
         if any(part.lower() in {".ssh", ".aws", ".azure", ".gnupg", ".secrets"}
-               or part.startswith(".env") or part.lower() in {
+               or part.lower().startswith(".env") or part.lower() in {
             "secrets.json", "credentials.json", "credentials.db", "token.json",
             "id_rsa", "id_ed25519", "authorized_keys", ".npmrc", ".pypirc",
             ".netrc", ".git-credentials", "auth.json", "service-account.json",
