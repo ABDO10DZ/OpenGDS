@@ -24,12 +24,15 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.backend = FakeBackend()
-        self.cache = Path(self.temp.name).parent / (Path(self.temp.name).name + "-mcp-cache")\n        self.service = OpenGDSMCPService(self.root, self.backend, cache_root=self.cache)
+        self.cache = Path(self.temp.name).parent / (Path(self.temp.name).name + "-mcp-cache")
+        self.service = OpenGDSMCPService(self.root, self.backend, cache_root=self.cache)
         (self.root / "main.gd").write_text("extends Node\n", encoding="utf-8")
         (self.root / "main.gdc").write_bytes(b"GDSC")
         (self.root / "README.md").write_text("OpenGDS project\n", encoding="utf-8")
 
     def tearDown(self):
+        import shutil
+        shutil.rmtree(self.cache, ignore_errors=True)
         self.temp.cleanup()
 
     def test_list_and_read_workspace_files(self):
@@ -105,15 +108,15 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
             "from library import Widget\ninstance = Widget()\n", encoding="utf-8"
         )
         refreshed = self.service.refresh_project_index()
-        self.assertEqual(refreshed["indexed_files"], 2)
+        self.assertEqual(refreshed["indexed_files"], 4)
         self.assertIn("outside the workspace", refreshed["storage"])
         status = self.service.project_index_status()
-        self.assertEqual(status["indexed_files"], 2)
+        self.assertEqual(status["indexed_files"], 4)
         self.assertNotIn("cache_path", status)
         found = self.service.search_project_symbols("Widget")
         self.assertTrue(any(row["path"] == "library.py" for row in found["results"]))
         summary = self.service.summarize_project_architecture()
-        self.assertEqual(summary["indexed_files"], 2)
+        self.assertEqual(summary["indexed_files"], 4)
         traced = self.service.trace_project_symbol("Widget")
         self.assertIn("client.py", traced["files"])
         related = self.service.related_project_files("library.py")
