@@ -107,7 +107,7 @@ func add(value: int) -> int:
 
     def test_version_profiles_cover_old_and_current_families(self):
         versions = {p["version"] for p in compat.supported_profiles()}
-        self.assertTrue({1, 2, 3, 4, 5, 10, 11, 12, 13, 100, 101}.issubset(versions))
+        self.assertTrue(set(range(1, 14)).union({100, 101}).issubset(versions))
 
     def test_header_distinguishes_v100_and_v101(self):
         a = compat.inspect_header(container(100, [short_token(1, 1)], True))
