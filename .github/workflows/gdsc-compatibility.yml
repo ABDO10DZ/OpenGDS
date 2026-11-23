@@ -70,7 +70,7 @@ jobs:
             --output="$RUNNER_TEMP/real-v100/out"
           REAL_GDC="$(find "$RUNNER_TEMP/real-v100/out" -type f -name '*.gdc' | head -n 1)"
           test -n "$REAL_GDC"
-          python tests/verify_real_gdsc.py "$REAL_GDC"
+          python tests/verify_real_gdsc.py "$REAL_GDC" "$GDRE_BIN" "$RUNNER_TEMP/real-v100/main.gd"
 
           mkdir -p "$RUNNER_TEMP/real-legacy/out"
           "$GDRE_BIN" --headless \
