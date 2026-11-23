@@ -1,10 +1,12 @@
 import hashlib
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtNetwork import QAbstractSocket
 from types import SimpleNamespace
 
@@ -155,6 +157,38 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             self.assertEqual(disconnected["state"], "disconnected")
             self.assertFalse(disconnected["connected"])
             self.assertEqual(disconnected["call_stack"], [])
+
+    def test_worker_navigation_is_dispatched_on_the_qt_thread(self):
+        application = QCoreApplication.instance() or QCoreApplication([])
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "main.gd"
+            source.write_text("extends Node\\n", encoding="utf-8")
+            window = FakeWindow(root, [])
+            caller_threads = []
+            window.open_path = lambda path: caller_threads.append(threading.get_ident())
+            bridge = IDEControlBridge(window)
+            gui_thread_id = threading.get_ident()
+            result = {}
+            errors = []
+
+            def request():
+                try:
+                    result.update(bridge.call("ide_open_file", {"path": "main.gd"}))
+                except Exception as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=request, daemon=True)
+            worker.start()
+            deadline = time.monotonic() + 3
+            while worker.is_alive() and time.monotonic() < deadline:
+                application.processEvents()
+                worker.join(0.005)
+            application.processEvents()
+            self.assertFalse(worker.is_alive(), "Qt did not dispatch the worker's IDE request.")
+            self.assertEqual(errors, [])
+            self.assertEqual(result, {"opened": "main.gd"})
+            self.assertEqual(caller_threads, [gui_thread_id])
 
     def test_ide_action_checks_expected_workspace_before_navigation(self):
         with tempfile.TemporaryDirectory() as td:
