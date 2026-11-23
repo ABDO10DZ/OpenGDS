@@ -90,6 +90,10 @@ def _load_keyring(keyring_api=None):
     return keyring_api
 
 
+class _IDEWorkspaceMismatch(RuntimeError):
+    """Raised when an IDE instance changed projects before executing an IPC action."""
+
+
 def _send_json(stream, payload: dict[str, Any]) -> None:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(raw) > MAX_RESPONSE_BYTES:
@@ -113,8 +117,12 @@ class _IDEControlRequestHandler(socketserver.StreamRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             _send_json(self.wfile, {"ok": False, "error": "Invalid IPC request encoding."})
             return
-        if not isinstance(request, dict) or set(request) != {"token", "name", "args"}:
+        if not isinstance(request, dict) or set(request) != {"token", "workspace_id", "name", "args"}:
             _send_json(self.wfile, {"ok": False, "error": "Invalid IPC request shape."})
+            return
+        workspace_id = request.get("workspace_id")
+        if not isinstance(workspace_id, str) or not re.fullmatch(r"[0-9a-f]{64}", workspace_id):
+            _send_json(self.wfile, {"ok": False, "error": "Invalid requested workspace identity."})
             return
         supplied = request.get("token")
         if not isinstance(supplied, str) or not hmac.compare_digest(supplied, self.server.token):
@@ -155,12 +163,16 @@ class _IDEControlRequestHandler(socketserver.StreamRequestHandler):
             _send_json(self.wfile, {"ok": False, "error": "Invalid IDE panel name."})
             return
         try:
-            result = self.server.bridge.call(name, args)
+            bridge_args = dict(args)
+            bridge_args["_expected_workspace_id"] = workspace_id
+            result = self.server.bridge.call(name, bridge_args)
             if not isinstance(result, dict):
                 raise TypeError("IDE control returned an unsupported response.")
             _send_json(self.wfile, {"ok": True, "result": result})
         except Exception as exc:
-            _send_json(self.wfile, {"ok": False, "error": str(exc)[:1000]})
+            message = str(exc)[:1000]
+            code = "workspace_mismatch" if message.startswith("Workspace identity mismatch") else "action_failed"
+            _send_json(self.wfile, {"ok": False, "code": code, "error": message})
 
 
 class _ThreadedIDEControlServer(socketserver.ThreadingTCPServer):
@@ -315,9 +327,10 @@ class IDEControlIPCClient:
         return rows
 
     @staticmethod
-    def _request(registry: dict[str, Any], token: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _request(registry: dict[str, Any], token: str, workspace_id: str,
+                 name: str, args: dict[str, Any]) -> dict[str, Any]:
         payload = json.dumps(
-            {"token": token, "name": name, "args": args},
+            {"token": token, "workspace_id": workspace_id, "name": name, "args": args},
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8") + b"\n"
         if len(payload) > MAX_REQUEST_BYTES:
@@ -339,6 +352,8 @@ class IDEControlIPCClient:
             response = json.loads(bytes(chunks).split(b"\n", 1)[0].decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise RuntimeError("The local IDE returned an invalid IPC response.") from None
+        if isinstance(response, dict) and response.get("code") == "workspace_mismatch":
+            raise _IDEWorkspaceMismatch(str(response.get("error", "Workspace identity mismatch."))[:1000])
         if not isinstance(response, dict) or response.get("ok") is not True or not isinstance(response.get("result"), dict):
             message = response.get("error", "The local IDE rejected the request.") if isinstance(response, dict) else "Invalid local IDE response."
             raise RuntimeError(str(message)[:1000])
@@ -361,16 +376,11 @@ class IDEControlIPCClient:
                 token = keyring_api.get_password(KEYRING_SERVICE, registry["key_id"])
                 if not isinstance(token, str) or not token:
                     continue
-                state = self._request(registry, token, "ide_get_state", {})
-            except (OSError, RuntimeError, ValueError, TypeError):
+                return self._request(registry, token, expected_workspace, name, args)
+            except _IDEWorkspaceMismatch:
                 continue
-            if state.get("workspace_id") != expected_workspace:
+            except (OSError, TimeoutError):
                 continue
-            if name == "ide_get_state":
-                return state
-            # Once the workspace match is authenticated, preserve the IDE's
-            # meaningful validation/UI errors instead of hiding them as discovery failures.
-            return self._request(registry, token, name, args)
         raise RuntimeError(
             "No enabled OpenGDS-IDE instance has this workspace open. In the IDE, enable "
             "Tools → Allow external MCP IDE navigation for the current session."
