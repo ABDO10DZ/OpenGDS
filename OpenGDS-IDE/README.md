@@ -1,8 +1,8 @@
 # OpenGDS-IDE 1.0.3
 
-A desktop workspace for GDScript and OpenGDS GDSC v101 tooling. It combines the OpenGDS Python core with Godot's own CLI, GDScript Language Server (LSP), Debug Adapter Protocol (DAP), and project/package utilities.
+A desktop workspace for GDScript and OpenGDS GDSC v100/v101 tooling, with legacy Godot bytecode version detection and an optional GDRE Tools adapter. It combines the OpenGDS Python core with Godot's own CLI, GDScript Language Server (LSP), Debug Adapter Protocol (DAP), and project/package utilities.
 
-> **Scope statement:** this is a feature-rich development build, not a claim of complete parity with the Godot Editor or VS Code. The bundled OpenGDS compiler serializes a GDScript token buffer into GDSC v101; it is not a replacement for Godot's full parser, semantic analyzer, type checker, importer, or project exporter. Use Godot validation and the engine itself for engine-level correctness.
+> **Scope statement:** this is a feature-rich development build, not a claim of complete parity with the Godot Editor or VS Code. The bundled OpenGDS compiler serializes a GDScript token buffer into GDSC v100 or v101 through a separate IDE compatibility adapter; it is not a replacement for Godot's full parser, semantic analyzer, type checker, importer, or project exporter. Use Godot validation and the engine itself for engine-level correctness.
 
 ## Get started on Windows
 
@@ -66,7 +66,7 @@ OpenGDS menu and explorer context actions expose the bundled core:
 
 | Action | Input | Result |
 |---|---|---|
-| Compile | `.gd` or a folder/project | GDSC v101 `.gdc` |
+| Compile | `.gd` or a folder/project | GDSC v100 or v101 `.gdc` (selected target) |
 | Decompile | `.gdc` or a folder/project | reconstructed `.gd` source |
 | Info / validate | `.gdc` | header, hash, compression, counts and supported-structure validation |
 | Static debug | `.gdc` or `.gd` | token-context report and source-line breakpoint mapping |
@@ -86,7 +86,7 @@ Double-clicking a `.gdc` file runs **OpenGDS info** automatically. The report ta
 - Existing output files are skipped unless overwrite is enabled. Continue-on-error is configurable. Every file result is included in the operation summary/log.
 - IDE debug-cache and decompile working areas are excluded from source scans to avoid accidental recursion.
 
-The `OpenGDS.py` CLI currently exposes `info`, `comp`, `dcmp`, `hexdump`, `audit`, `consts`, `disasm`, `dbg`, and `diff`. OpenGDS is currently targeted at **GDSC v101**. The upstream compiler performs tokenizer and token-buffer serialization; it does not implement the complete Godot compiler or semantic checker. Decompiled output cannot restore comments that were discarded from bytecode or guarantee original formatting. See the upstream [OpenGDS project](https://github.com/ABDO10DZ/OpenGDS) for core behavior and format scope.
+The unchanged `OpenGDS.py` CLI currently exposes `info`, `comp`, `dcmp`, `hexdump`, `audit`, `consts`, `disasm`, `dbg`, and `diff`. The desktop IDE adds an isolated `gdsc_compat.py` adapter: v100 (Godot 4.3–4.4) is normalized to the v101 decoder/token model for analysis and can be emitted by reversible token/header conversion; v101 remains native. Older revisions 3–13 are identified and routed to the optional GDRE Tools adapter rather than being misread as v101. The upstream compiler performs tokenizer and token-buffer serialization; it does not implement the complete Godot compiler or semantic checker. Decompiled output cannot restore comments that were discarded from bytecode or guarantee original formatting. See the upstream [OpenGDS project](https://github.com/ABDO10DZ/OpenGDS) for core behavior and format scope.
 
 ## Godot integration
 
