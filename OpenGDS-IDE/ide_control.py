@@ -173,6 +173,16 @@ class IDEControlBridge(QObject):
                 message = re.sub(r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\s*[:=]\s*[^\s,;]+",
                                  r"\1=[REDACTED]", message)
                 message = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", message)
+                message = re.sub(
+                    r"(?i)\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|"
+                    r"gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|"
+                    r"AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16})\b",
+                    "[REDACTED]", message,
+                )
+                message = re.sub(
+                    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+                    "[REDACTED]", message,
+                )
                 rows.append({"path": relative, "line": line, "column": column, "message": message})
             return {"workspace": root.name, "diagnostics": rows, "count": len(rows),
                     "truncated": int(problems.count()) > 100,
