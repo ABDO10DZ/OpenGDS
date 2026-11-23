@@ -122,7 +122,7 @@ class _IDEControlRequestHandler(socketserver.StreamRequestHandler):
             return
         name = request.get("name")
         args = request.get("args")
-        if name not in IDE_CONTROL_ACTIONS or not isinstance(args, dict):
+        if not isinstance(name, str) or name not in IDE_CONTROL_ACTIONS or not isinstance(args, dict):
             _send_json(self.wfile, {"ok": False, "error": "IDE action is not allow-listed."})
             return
         try:
@@ -321,7 +321,11 @@ class IDEControlIPCClient:
         args = dict(args or {})
         keyring_api = _load_keyring(self.keyring_api)
         expected_workspace = workspace_identity(self.workspace)
-        for registry in self._registries():
+        try:
+            registries = self._registries()
+        except (OSError, PermissionError):
+            registries = []
+        for registry in registries:
             try:
                 token = keyring_api.get_password(KEYRING_SERVICE, registry["key_id"])
                 if not isinstance(token, str) or not token:
