@@ -39,6 +39,18 @@ jobs:
         env:
           PYTHONPATH: ${{ matrix.python_path }}
         run: python -m unittest discover -s tests -p "test_gdsc_compat.py" -v
+      - name: Run desktop backend and workspace regression tests
+        if: matrix.ide == 'OpenGDS-IDE'
+        working-directory: OpenGDS-IDE
+        run: |
+          python -m unittest discover -s tests -p "test_backend.py" -v
+          python -m unittest discover -s tests -p "test_project_ops.py" -v
+          python -m unittest discover -s tests -p "test_project_manager.py" -v
+          python -m unittest discover -s tests -p "test_zstd_support.py" -v
+      - name: Run Android core static-debugger regression tests
+        if: matrix.ide == 'OpenGDS-IDE-Android'
+        working-directory: OpenGDS-IDE-Android
+        run: python -m unittest discover -s tests -p "test_native_debugger.py" -v
       - name: Verify real Godot bytecode with GDRE Tools
         if: matrix.ide == 'OpenGDS-IDE'
         working-directory: OpenGDS-IDE
