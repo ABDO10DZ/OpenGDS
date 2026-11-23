@@ -1618,9 +1618,24 @@ private fun SettingsPage(
         Text("Discovery", style = MaterialTheme.typography.titleMedium)
         SettingSwitch("Show system apps", state.showSystemApps, model::setShowSystem)
         SettingSwitch("Include non-Godot apps", state.includeNonGodot, model::setIncludeNonGodot)
-        Text("Godot applications and GDSC v101 remain the default focus. Non-Godot visibility enables Smali text editing for imported source files.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Godot applications and GDSC v100/v101 remain the default focus. Non-Godot visibility enables Smali text editing for imported source files.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         HorizontalDivider(Modifier.padding(vertical = 4.dp))
         Text("Compilation", style = MaterialTheme.typography.titleMedium)
+        Text("Target GDSC bytecode", style = MaterialTheme.typography.bodyMedium)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            listOf(101 to "v101 · Godot 4.5+", 100 to "v100 · Godot 4.3–4.4").forEachIndexed { index, choice ->
+                SegmentedButton(
+                    selected = state.bytecodeVersion == choice.first,
+                    onClick = { model.setBytecodeVersion(choice.first) },
+                    shape = SegmentedButtonDefaults.itemShape(index, 2)
+                ) { Text(choice.second) }
+            }
+        }
+        Text(
+            "Godot 1.x–3.x bytecode is detected separately and uses the optional GDRE Tools adapter. The selected target applies to single-file and batch compilation.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         SettingSwitch("Zstandard compression", state.compressed, model::setCompressed)
         SettingSwitch("Replace existing .gd/.gdc outputs", state.overwrite, model::setOverwrite)
         Text("When enabled, imports and generated .gd/.gdc outputs can replace same-name files; the previous file is kept as a .bak backup.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
