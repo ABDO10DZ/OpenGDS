@@ -33,7 +33,7 @@ PROFILES = {
                          "Shared revision across engine branches; supply the exact engine release or commit."),
     11: BytecodeProfile(11, "Godot 3.x", "3.0.0–3.0.6", "gdre"),
     12: BytecodeProfile(12, "Godot 3.x", "3.0.0–3.0.6 and 3.1–3.1.1", "gdre"),
-    13: BytecodeProfile(13, "Godot 3.x", "3.1–3.1.1, 3.2, and 3.5", "gdre"),
+    13: BytecodeProfile(13, "Godot 3.x", "3.1–3.5 stable releases", "gdre"),
     100: BytecodeProfile(100, "Godot 4.x", "4.3–4.4 stable", "native-v100",
                          "20-byte payload metadata. Token mapping targets the released 4.3/4.4 tokenizer; development snapshots may reuse v100 with different token ids and should be handled by GDRE Tools using the exact engine commit."),
     101: BytecodeProfile(101, "Godot 4.x", "4.5+ stable", "native-v101",
