@@ -122,8 +122,37 @@ class _IDEControlRequestHandler(socketserver.StreamRequestHandler):
             return
         name = request.get("name")
         args = request.get("args")
+        action_fields = {
+            "ide_get_state": set(),
+            "ide_get_diagnostics": set(),
+            "ide_get_debug_state": set(),
+            "ide_open_file": {"path"},
+            "ide_go_to_line": {"line", "column"},
+            "ide_focus_panel": {"panel"},
+        }
         if not isinstance(name, str) or name not in IDE_CONTROL_ACTIONS or not isinstance(args, dict):
             _send_json(self.wfile, {"ok": False, "error": "IDE action is not allow-listed."})
+            return
+        required = {
+            "ide_open_file": {"path"},
+            "ide_go_to_line": {"line"},
+            "ide_focus_panel": {"panel"},
+        }.get(name, set())
+        if not required.issubset(args) or not set(args).issubset(action_fields[name]):
+            _send_json(self.wfile, {"ok": False, "error": "Invalid IDE action arguments."})
+            return
+        if name == "ide_open_file" and (not isinstance(args.get("path"), str) or len(args["path"]) > 4096):
+            _send_json(self.wfile, {"ok": False, "error": "Invalid IDE file path."})
+            return
+        if name == "ide_go_to_line":
+            if type(args.get("line")) is not int or args["line"] < 1:
+                _send_json(self.wfile, {"ok": False, "error": "Invalid IDE line number."})
+                return
+            if "column" in args and (type(args["column"]) is not int or not 0 <= args["column"] <= 1_000_000):
+                _send_json(self.wfile, {"ok": False, "error": "Invalid IDE editor column."})
+                return
+        if name == "ide_focus_panel" and (not isinstance(args.get("panel"), str) or len(args["panel"]) > 64):
+            _send_json(self.wfile, {"ok": False, "error": "Invalid IDE panel name."})
             return
         try:
             result = self.server.bridge.call(name, args)
@@ -316,8 +345,10 @@ class IDEControlIPCClient:
         return response["result"]
 
     def call(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-        if name not in IDE_CONTROL_ACTIONS:
+        if not isinstance(name, str) or name not in IDE_CONTROL_ACTIONS:
             raise ValueError("IDE action is not allow-listed.")
+        if args is not None and not isinstance(args, dict):
+            raise TypeError("IDE action arguments must be an object.")
         args = dict(args or {})
         keyring_api = _load_keyring(self.keyring_api)
         expected_workspace = workspace_identity(self.workspace)
