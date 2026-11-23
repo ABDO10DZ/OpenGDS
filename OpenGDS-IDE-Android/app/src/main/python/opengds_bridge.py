@@ -148,7 +148,7 @@ def info(path: str) -> str:
     return report("info", path)
 
 
-def decompile(path: str) -> str:
+def decompile(path: str, gdre_tools_path: str = "") -> str:
     _check_cancelled()
     core = _core()
     data = Path(path).read_bytes()
@@ -156,7 +156,7 @@ def decompile(path: str) -> str:
     if header.version in (100, 101):
         _header, source = compat.decompile_data(data, core)
     elif header.profile and header.profile.capability == "gdre":
-        source = compat.decompile_legacy_file(path)
+        source = compat.decompile_legacy_file(path, executable=gdre_tools_path or None)
     else:
         raise compat.GDSCCompatibilityError(f"Unsupported GDSC revision {header.version}")
     _check_cancelled()
@@ -184,7 +184,8 @@ def validate_gdc(path: str) -> str:
 
 def compile_source(source: str, destination: str, compressed: bool = True,
                    tab_size: int = 4, force: bool = False,
-                   bytecode_version: int = 101, engine_version: str = "") -> str:
+                   bytecode_version: int = 101, engine_version: str = "",
+                   gdre_tools_path: str = "") -> str:
     _check_cancelled()
     core = _core()
     dest = Path(destination)
@@ -202,7 +203,8 @@ def compile_source(source: str, destination: str, compressed: bool = True,
             source_file = stage / "source.gd"
             staged_output = stage / "compiled.gdc"
             source_file.write_text(source, encoding="utf-8")
-            compat.compile_legacy_file(source_file, staged_output, engine_version.strip())
+            compat.compile_legacy_file(source_file, staged_output, engine_version.strip(),
+                                       executable=gdre_tools_path or None)
             legacy_header = compat.inspect_header(staged_output.read_bytes())
             if not legacy_header.profile:
                 raise compat.GDSCCompatibilityError(
@@ -329,7 +331,8 @@ def safe_call_json(function_name: str, *args) -> str:
         return json.dumps({"ok": False, "error": str(exc), "trace": traceback.format_exc()})
 
 
-def decompile_all(folder: str, force: bool = False, continue_on_error: bool = True) -> str:
+def decompile_all(folder: str, force: bool = False, continue_on_error: bool = True,
+                  gdre_tools_path: str = "") -> str:
     core = _core()
     root = Path(folder)
     if not root.is_dir():
@@ -356,7 +359,7 @@ def decompile_all(folder: str, force: bool = False, continue_on_error: bool = Tr
             if detected.version in (100, 101):
                 _header, source = compat.decompile_data(raw_data, core)
             else:
-                source = compat.decompile_legacy_file(source_file)
+                source = compat.decompile_legacy_file(source_file, executable=gdre_tools_path or None)
             _check_cancelled()
             tmp = target.with_name(target.name + ".opengds-tmp")
             try:
@@ -379,7 +382,8 @@ def decompile_all(folder: str, force: bool = False, continue_on_error: bool = Tr
 
 def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
                 force: bool = False, continue_on_error: bool = True,
-                bytecode_version: int = 101, engine_version: str = "") -> str:
+                bytecode_version: int = 101, engine_version: str = "",
+                gdre_tools_path: str = "") -> str:
     core = _core()
     root = Path(folder)
     if not root.is_dir():
@@ -405,7 +409,8 @@ def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
                     )
                 with tempfile.TemporaryDirectory(prefix="opengds-gdre-", dir=str(root)) as stage_dir:
                     staged_output = Path(stage_dir) / "compiled.gdc"
-                    compat.compile_legacy_file(source_file, staged_output, engine_version.strip())
+                    compat.compile_legacy_file(source_file, staged_output, engine_version.strip(),
+                                       executable=gdre_tools_path or None)
                     header = compat.inspect_header(staged_output.read_bytes())
                     if not header.profile:
                         raise compat.GDSCCompatibilityError(
