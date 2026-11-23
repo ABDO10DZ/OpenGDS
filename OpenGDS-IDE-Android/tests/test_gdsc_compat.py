@@ -88,6 +88,17 @@ class GDSCCompatibilityTests(unittest.TestCase):
         with self.assertRaises(compat.GDSCCompatibilityError):
             compat._translate_tokens(short_token(83, 1), 0, 1, 101, 100)
 
+    def test_v101_to_v100_round_trip_preserves_tokens_and_lines(self):
+        data = container(101, [
+            long_token(1, 0, 1), long_token(2, 9, 2),
+            long_token(82, 0, 3), long_token(84, 0, 4), long_token(99, 0, 5)
+        ])
+        original = self.core.decode_gdsc(data)
+        encoded = compat.encode_v100(data, self.core, compressed=False)
+        header, restored = compat.decode_compatible(encoded, self.core)
+        self.assertEqual(100, header.version)
+        self.assertEqual(compat._signature(original), compat._signature(restored))
+
     def test_truncated_header_is_rejected(self):
         with self.assertRaises(compat.GDSCCompatibilityError):
             compat.inspect_header(b"GDSC\\0\\0")
