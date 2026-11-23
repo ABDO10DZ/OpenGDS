@@ -66,8 +66,10 @@ class OpenGDSBackend:
         return [*(self.python_command or [sys.executable]), str(self.script), *map(str, args)]
 
     def run(self, *args: str, cwd: str | Path | None = None, timeout: int | None = None, cancel_event=None) -> subprocess.CompletedProcess:
-        command = self.command(*args)
         mode = str(args[0]) if args else "core"
+        if mode == "dcmp" and len(args) > 1 and Path(args[1]).expanduser().is_dir():
+            return self._decompile_folder_compat(args, cancel_event=cancel_event)
+        command = self.command(*args)
         default_category = "GDSCRIPT" if mode == "comp" else ("GODOT_DEBUG" if mode == "dbg" else "GDSC")
         log_event("BUILD", logging.INFO, f"Launching OpenGDS core: {command!r}; cwd={cwd or os.getcwd()}")
         core_log = log_directory() / "core.log"
@@ -192,6 +194,60 @@ class OpenGDSBackend:
             raise
         self._compat_core_module = module
         return module
+
+    def _decompile_folder_compat(self, args, cancel_event=None):
+        root = Path(args[1]).expanduser().resolve()
+        tail = [str(x) for x in args[2:]]
+        output_root = Path(str(root) + ".dcmp")
+        force = "--force" in tail
+        if "--outdir" in tail:
+            at = tail.index("--outdir")
+            if at + 1 >= len(tail):
+                raise ValueError("--outdir requires a directory")
+            output_root = Path(tail[at + 1]).expanduser().resolve()
+        core = self._compat_core()
+        output_root.mkdir(parents=True, exist_ok=True)
+        ok, failed, skipped, messages = 0, 0, 0, []
+        for binary in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() == ".gdc"):
+            if cancel_event is not None and cancel_event.is_set():
+                raise BackendError("Operation cancelled by user")
+            try:
+                data = binary.read_bytes()
+                header = compat.inspect_header(data)
+                if header.version in (100, 101):
+                    _header, source = compat.decompile_data(data, core)
+                elif header.profile and header.profile.capability == "gdre":
+                    source = compat.decompile_legacy_file(binary)
+                else:
+                    skipped += 1
+                    messages.append(f"[SKIP] {binary}: unknown GDSC revision {header.version}")
+                    continue
+                relative = binary.relative_to(root).with_suffix(".gd")
+                target = output_root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() and not force:
+                    skipped += 1
+                    messages.append(f"[SKIP] {binary}: output exists: {target}")
+                    continue
+                temp = target.with_name(target.name + ".opengds-tmp")
+                try:
+                    temp.write_text(source, encoding="utf-8", newline="\\n")
+                    os.replace(temp, target)
+                finally:
+                    if temp.exists():
+                        temp.unlink()
+                ok += 1
+                messages.append(f"[OK] {binary} -> {target} (GDSC v{header.version})")
+            except Exception as exc:
+                failed += 1
+                messages.append(f"[ERROR] {binary}: {exc}")
+        report = "\\n".join([
+            f"Folder decompile: {root}", f"Succeeded: {ok}",
+            f"Failed: {failed}", f"Skipped: {skipped}", *messages
+        ])
+        return subprocess.CompletedProcess(
+            ["opengds-compat", "dcmp", str(root)], 1 if failed else 0, report, ""
+        )
 
     def compile(self, source: str | Path, output: str | Path | None = None,
                 compressed: bool = True, overwrite: bool = False, tab_size: int = 4,
