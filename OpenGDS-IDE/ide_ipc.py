@@ -335,7 +335,7 @@ class IDEControlIPCClient:
                  name: str, args: dict[str, Any]) -> dict[str, Any]:
         payload = json.dumps(
             {"token": token, "workspace_id": workspace_id, "name": name, "args": args},
-            ensure_ascii=False, separators=(",", ":"),
+            ensure_ascii=True, separators=(",", ":"),
         ).encode("utf-8") + b"\n"
         if len(payload) > MAX_REQUEST_BYTES:
             raise ValueError("IDE-control request exceeds the 32 KB IPC limit.")
