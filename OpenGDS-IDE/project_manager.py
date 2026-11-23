@@ -25,6 +25,7 @@ DEFAULT_PROJECT = {
         "compressed": True,
         "tab_size": 4,
         "bytecode_version": 101,
+        "engine_version": "",
         "overwrite": False,
         "continue_on_error": True,
         "output_directory": ".opengds/compiled",
