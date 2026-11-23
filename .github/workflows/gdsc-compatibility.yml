@@ -10,7 +10,7 @@ on:
 
 jobs:
   python-compatibility:
-    name: Python compatibility (\${{ matrix.ide }})
+    name: Python compatibility (${{ matrix.ide }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -30,14 +30,14 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check zstandard
       - name: Compile Python sources
-        working-directory: \${{ matrix.ide }}
+        working-directory: ${{ matrix.ide }}
         env:
-          PYTHONPATH: \${{ matrix.python_path }}
-        run: \${{ matrix.compile_command }}
+          PYTHONPATH: ${{ matrix.python_path }}
+        run: ${{ matrix.compile_command }}
       - name: Run compatibility regression tests
-        working-directory: \${{ matrix.ide }}
+        working-directory: ${{ matrix.ide }}
         env:
-          PYTHONPATH: \${{ matrix.python_path }}
+          PYTHONPATH: ${{ matrix.python_path }}
         run: python -m unittest discover -s tests -p "test_gdsc_compat.py" -v
       - name: Verify real Godot bytecode with GDRE Tools
         if: matrix.ide == 'OpenGDS-IDE'
