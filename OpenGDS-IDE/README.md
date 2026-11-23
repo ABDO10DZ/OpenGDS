@@ -246,6 +246,20 @@ The MCP server calls the same `OpenGDSBackend` adapter used by the desktop IDE. 
 
 MCP intentionally does not expose arbitrary shell execution, arbitrary Python scripts, direct workspace writes, or destructive GUI actions. Discovered build/test commands are never run by MCP. The built-in IDE agent retains its proposal-and-approval workflow for edits and commands. The MCP server is a separate stdio process and controls OpenGDS Core and safe project analysis—not the live GUI; live GUI navigation is available to the built-in assistant through the Qt bridge.
 
+### MCP resources and prompts
+
+External MCP clients can also read three bounded resources:
+
+| Resource URI | Contents |
+|---|---|
+| `opengds://workspace/overview` | Index status, up to 200 eligible file paths, available capabilities and safety boundaries; no source contents or absolute workspace/cache path. |
+| `opengds://workspace/architecture` | Current indexed architecture summary and index status. Refresh the index first or after workspace changes. |
+| `opengds://workspace/validation` | Detected validation tasks and command suggestions; nothing is executed. |
+
+Four reusable MCP prompts guide common workflows: `analyze_gdsc(path)`, `debug_project_error(error_text)`, `review_source_change(path)`, and `plan_validation(changed_paths)`. They instruct the client to call the relevant tools and distinguish evidence from heuristics. Prompt arguments are validated against workspace path rules; diagnostic text is redacted and capped before inclusion. Prompts only provide instructions—they do not execute tools by themselves.
+
+Resources expose bounded summaries, not arbitrary file reads. All resource and prompt behavior preserves the MCP server's read-only workspace policy; the only generated compile artifact remains temporary and outside the workspace.
+
 ## AI assistant
 
 The AI assistant is a detachable, closable native dock with explicit Ask/Agent modes and three focus scopes: **GDScript & Godot** (default), **OpenGDS core**, and **General coding**. The selected focus constrains the files the agent can list, read, search, and propose edits for; an active editor buffer outside the selected focus is excluded.
