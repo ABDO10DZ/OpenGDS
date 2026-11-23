@@ -53,7 +53,7 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             source = root / "player.gd"
             source.write_text("extends Node\n", encoding="utf-8")
             rows = [
-                FakeProblem("Parse Error: secret=private-value Bearer abcdefghijklmnop",
+                FakeProblem("Parse Error: secret=private-value Bearer abcdefghijklmnop raw sk-proj-1234567890abcdefghijklmnop ghp_1234567890abcdefghijklmnop AKIA1234567890ABCDEF eyJabcdefghijk.klmnopqrst.uvwxyzABCDE",
                             (str(source), 4, 2)),
             ]
             bridge = IDEControlBridge(FakeWindow(root, rows))
@@ -64,7 +64,7 @@ class IDEControlDiagnosticsTests(unittest.TestCase):
             self.assertEqual((row["line"], row["column"]), (4, 2))
             self.assertNotIn("private-value", row["message"])
             self.assertNotIn("abcdefghijklmnop", row["message"])
-            self.assertIn("[REDACTED]", row["message"])
+            self.assertIn("[REDACTED]", row["message"])\n            for token in ("sk-proj-1234567890abcdefghijklmnop", "ghp_1234567890abcdefghijklmnop", "AKIA1234567890ABCDEF", "eyJabcdefghijk.klmnopqrst.uvwxyzABCDE"):\n                self.assertNotIn(token, row["message"])
             self.assertIn("structured diagnostics only", result["source"])
 
     def test_excludes_external_sensitive_and_symlink_paths(self):
