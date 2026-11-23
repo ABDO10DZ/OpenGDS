@@ -171,8 +171,9 @@ def _translate_tokens(raw: bytes, offset: int, count: int, source: int, target: 
             line = _u32(raw, pos + 1, "token line")
             arg = 0
         typ = word & 0x7F
-        if source == 100 and target == 101 and typ >= V100_SHIFT_START:
-            typ += 1
+        if source == 100 and target == 101:
+            if typ >= V100_SHIFT_START:
+                typ += 1
         elif source == 101 and target == 100:
             if typ == V101_TRIPLE_PERIOD:
                 raise GDSCCompatibilityError(
