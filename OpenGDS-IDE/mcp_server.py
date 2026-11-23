@@ -1,4 +1,4 @@
-"""OpenGDS MCP server exposing safe, workspace-scoped core operations.
+"""OpenGDS MCP server exposing safe, workspace-scoped core and static project-intelligence operations.
 
 Install the optional MCP dependency with: pip install -r requirements-mcp.txt
 Run: python mcp_server.py --workspace /path/to/project
