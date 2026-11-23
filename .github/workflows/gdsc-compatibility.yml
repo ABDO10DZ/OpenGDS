@@ -53,7 +53,7 @@ jobs:
             "https://github.com/GDRETools/gdsdecomp/releases/download/v2.7.4/GDRE_tools-v2.7.4-linux.zip" \
             -o "$RUNNER_TEMP/gdre/gdre.zip"
           unzip -q "$RUNNER_TEMP/gdre/gdre.zip" -d "$RUNNER_TEMP/gdre"
-          GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f \( -iname 'gdre_tools*' -o -iname 'GDRE_tools*' \) | head -n 1)"
+          GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f -iname '*gdre*' | grep -vi '\.zip$' | head -n 1)"
           test -n "$GDRE_BIN"
           chmod +x "$GDRE_BIN"
           cat > "$RUNNER_TEMP/real-v100/main.gd" <<'GDSCRIPT'
