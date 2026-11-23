@@ -9,8 +9,8 @@ on:
       - main
 
 jobs:
-  compatibility:
-    name: Python compatibility (${{ matrix.ide }})
+  python-compatibility:
+    name: Python compatibility (\${{ matrix.ide }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -18,94 +18,45 @@ jobs:
         include:
           - ide: OpenGDS-IDE
             python_path: .
+            compile_command: python -m compileall -q .
           - ide: OpenGDS-IDE-Android
             python_path: app/src/main/python
+            compile_command: python -m py_compile app/src/main/python/gdsc_compat.py app/src/main/python/opengds_bridge.py tests/test_gdsc_compat.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install Zstandard test dependency
+      - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check zstandard
       - name: Compile Python sources
-        working-directory: ${{ matrix.ide }}
+        working-directory: \${{ matrix.ide }}
         env:
-          PYTHONPATH: ${{ matrix.python_path }}
-          IDE_FOLDER: ${{ matrix.ide }}
-        run: |
-          if [ "$IDE_FOLDER" = "OpenGDS-IDE" ]; then
-            python -m compileall -q .
-          else
-            python -m py_compile app/src/main/python/gdsc_compat.py app/src/main/python/opengds_bridge.py tests/test_gdsc_compat.py
-          fi
+          PYTHONPATH: \${{ matrix.python_path }}
+        run: \${{ matrix.compile_command }}
       - name: Run compatibility regression tests
-        working-directory: ${{ matrix.ide }}
+        working-directory: \${{ matrix.ide }}
         env:
-          PYTHONPATH: ${{ matrix.python_path }}
+          PYTHONPATH: \${{ matrix.python_path }}
         run: python -m unittest discover -s tests -p "test_gdsc_compat.py" -v
-
-      - name: Verify real Godot 4.3 GDSC v100 file with GDRE Tools
+      - name: Verify real Godot bytecode with GDRE Tools
         if: matrix.ide == 'OpenGDS-IDE'
         working-directory: OpenGDS-IDE
+        shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/gdre" "$RUNNER_TEMP/real-v100/out"
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gdre" "$RUNNER_TEMP/real-v100/out" "$RUNNER_TEMP/real-v13/out"
           curl --retry 3 --retry-delay 2 -L --fail \
             "https://github.com/GDRETools/gdsdecomp/releases/download/v2.7.4/GDRE_tools-v2.7.4-linux.zip" \
             -o "$RUNNER_TEMP/gdre/gdre.zip"
           unzip -q "$RUNNER_TEMP/gdre/gdre.zip" -d "$RUNNER_TEMP/gdre"
-          GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f -perm -u+x | head -n 1)"
-          if [ -z "$GDRE_BIN" ]; then
-            GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f -iname '*gdre*' | grep -viE '\.(zip|pck)
-          cat > "$RUNNER_TEMP/real-v100/main.gd" <<'GDSCRIPT'
-          extends RefCounted
-          const LIMIT := 42
-          var total: int = 0
-          func add(value: int) -> int:
-              total += value
-              return total
-          GDSCRIPT
-          "$GDRE_BIN" --headless \
-            --compile="$RUNNER_TEMP/real-v100/main.gd" \
-            --bytecode=4.3.0 \
-            --output="$RUNNER_TEMP/real-v100/out"
-          REAL_GDC="$(find "$RUNNER_TEMP/real-v100/out" -type f -name '*.gdc' | head -n 1)"
-          test -n "$REAL_GDC"
-          python tests/verify_real_gdsc.py "$REAL_GDC" "$GDRE_BIN" "$RUNNER_TEMP/real-v100/main.gd"
-
-          mkdir -p "$RUNNER_TEMP/real-legacy/out"
-          "$GDRE_BIN" --headless \
-            --compile="$RUNNER_TEMP/real-v100/main.gd" \
-            --bytecode=3.5.0 \
-            --output="$RUNNER_TEMP/real-legacy/out"
-          LEGACY_GDC="$(find "$RUNNER_TEMP/real-legacy/out" -type f -name '*.gdc' | head -n 1)"
-          test -n "$LEGACY_GDC"
-          python tests/verify_real_legacy_gdsc.py "$LEGACY_GDC" "$GDRE_BIN"
-
-  android-compile:
-    name: Android Kotlin/Gradle compile
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.13"
-      - name: Install Android SDK packages
-        run: |
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)"
-          test -n "$SDKMANAGER"
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
-      - name: Compile Android debug Kotlin
-        working-directory: OpenGDS-IDE-Android
-        run: gradle --no-daemon :app:compileDebugKotlin
- | head -n 1)"
-          fi
+          GDRE_BIN=""
+          while IFS= read -r candidate; do
+            if file "$candidate" | grep -q "ELF .*executable"; then
+              GDRE_BIN="$candidate"
+              break
+            fi
+          done < <(find "$RUNNER_TEMP/gdre" -type f)
           test -n "$GDRE_BIN"
           chmod +x "$GDRE_BIN"
           file "$GDRE_BIN"
@@ -121,20 +72,19 @@ jobs:
             --compile="$RUNNER_TEMP/real-v100/main.gd" \
             --bytecode=4.3.0 \
             --output="$RUNNER_TEMP/real-v100/out"
-          REAL_GDC="$(find "$RUNNER_TEMP/real-v100/out" -type f -name '*.gdc' | head -n 1)"
-          test -n "$REAL_GDC"
-          python tests/verify_real_gdsc.py "$REAL_GDC" "$GDRE_BIN" "$RUNNER_TEMP/real-v100/main.gd"
+          REAL_V100="$(find "$RUNNER_TEMP/real-v100/out" -type f -name '*.gdc' | head -n 1)"
+          test -n "$REAL_V100"
+          python tests/verify_real_gdsc.py "$REAL_V100" "$GDRE_BIN" "$RUNNER_TEMP/real-v100/main.gd"
 
-          mkdir -p "$RUNNER_TEMP/real-legacy/out"
           "$GDRE_BIN" --headless \
             --compile="$RUNNER_TEMP/real-v100/main.gd" \
             --bytecode=3.5.0 \
-            --output="$RUNNER_TEMP/real-legacy/out"
-          LEGACY_GDC="$(find "$RUNNER_TEMP/real-legacy/out" -type f -name '*.gdc' | head -n 1)"
-          test -n "$LEGACY_GDC"
-          python tests/verify_real_legacy_gdsc.py "$LEGACY_GDC" "$GDRE_BIN"
+            --output="$RUNNER_TEMP/real-v13/out"
+          REAL_V13="$(find "$RUNNER_TEMP/real-v13/out" -type f -name '*.gdc' | head -n 1)"
+          test -n "$REAL_V13"
+          python tests/verify_real_legacy_gdsc.py "$REAL_V13" "$GDRE_BIN"
 
-  android-compile:
+  android-kotlin:
     name: Android Kotlin/Gradle compile
     runs-on: ubuntu-latest
     steps:
@@ -150,10 +100,13 @@ jobs:
         with:
           gradle-version: "8.13"
       - name: Install Android SDK packages
+        shell: bash
         run: |
+          set -euo pipefail
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)"
           test -n "$SDKMANAGER"
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
       - name: Compile Android debug Kotlin
         working-directory: OpenGDS-IDE-Android
         run: gradle --no-daemon :app:compileDebugKotlin
