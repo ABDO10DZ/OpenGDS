@@ -118,11 +118,9 @@ class IDEControlBridge(QObject):
             return None
         root = self._workspace()
         try:
-            supplied = Path(str(value)).expanduser()
-            lexical = Path(os.path.abspath(supplied if supplied.is_absolute() else root / supplied))
-            relative = lexical.relative_to(root)
-            self._relative_file(relative.as_posix())
-            return relative.as_posix()
+            _resolved, relative = _safe_workspace_location(root, value, self.window.project_root())
+            self._relative_file(relative)
+            return relative
         except (OSError, ValueError, PermissionError, TypeError):
             return None
 
