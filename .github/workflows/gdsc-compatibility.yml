@@ -53,9 +53,62 @@ jobs:
             "https://github.com/GDRETools/gdsdecomp/releases/download/v2.7.4/GDRE_tools-v2.7.4-linux.zip" \
             -o "$RUNNER_TEMP/gdre/gdre.zip"
           unzip -q "$RUNNER_TEMP/gdre/gdre.zip" -d "$RUNNER_TEMP/gdre"
-          GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f -iname '*gdre*' | grep -vi '\.zip$' | head -n 1)"
+          GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f -perm -u+x | head -n 1)"
+          if [ -z "$GDRE_BIN" ]; then
+            GDRE_BIN="$(find "$RUNNER_TEMP/gdre" -type f -iname '*gdre*' | grep -viE '\.(zip|pck)
+          cat > "$RUNNER_TEMP/real-v100/main.gd" <<'GDSCRIPT'
+          extends RefCounted
+          const LIMIT := 42
+          var total: int = 0
+          func add(value: int) -> int:
+              total += value
+              return total
+          GDSCRIPT
+          "$GDRE_BIN" --headless \
+            --compile="$RUNNER_TEMP/real-v100/main.gd" \
+            --bytecode=4.3.0 \
+            --output="$RUNNER_TEMP/real-v100/out"
+          REAL_GDC="$(find "$RUNNER_TEMP/real-v100/out" -type f -name '*.gdc' | head -n 1)"
+          test -n "$REAL_GDC"
+          python tests/verify_real_gdsc.py "$REAL_GDC" "$GDRE_BIN" "$RUNNER_TEMP/real-v100/main.gd"
+
+          mkdir -p "$RUNNER_TEMP/real-legacy/out"
+          "$GDRE_BIN" --headless \
+            --compile="$RUNNER_TEMP/real-v100/main.gd" \
+            --bytecode=3.5.0 \
+            --output="$RUNNER_TEMP/real-legacy/out"
+          LEGACY_GDC="$(find "$RUNNER_TEMP/real-legacy/out" -type f -name '*.gdc' | head -n 1)"
+          test -n "$LEGACY_GDC"
+          python tests/verify_real_legacy_gdsc.py "$LEGACY_GDC" "$GDRE_BIN"
+
+  android-compile:
+    name: Android Kotlin/Gradle compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+      - name: Compile Android debug Kotlin
+        working-directory: OpenGDS-IDE-Android
+        run: gradle --no-daemon :app:compileDebugKotlin
+ | head -n 1)"
+          fi
           test -n "$GDRE_BIN"
           chmod +x "$GDRE_BIN"
+          file "$GDRE_BIN"
           cat > "$RUNNER_TEMP/real-v100/main.gd" <<'GDSCRIPT'
           extends RefCounted
           const LIMIT := 42
