@@ -204,9 +204,9 @@ def compile_source(source: str, destination: str, compressed: bool = True,
             source_file.write_text(source, encoding="utf-8")
             compat.compile_legacy_file(source_file, staged_output, engine_version.strip())
             legacy_header = compat.inspect_header(staged_output.read_bytes())
-            if not legacy_header.profile or legacy_header.profile.capability != "gdre":
+            if not legacy_header.profile:
                 raise compat.GDSCCompatibilityError(
-                    f"GDRE Tools returned an unrecognized bytecode revision {legacy_header.version}"
+                    f"GDRE Tools returned an unknown bytecode revision {legacy_header.version}"
                 )
             staged_dest = dest.with_name(dest.name + ".opengds-tmp")
             try:
@@ -407,9 +407,9 @@ def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
                     staged_output = Path(stage_dir) / "compiled.gdc"
                     compat.compile_legacy_file(source_file, staged_output, engine_version.strip())
                     header = compat.inspect_header(staged_output.read_bytes())
-                    if not header.profile or header.profile.capability != "gdre":
+                    if not header.profile:
                         raise compat.GDSCCompatibilityError(
-                            f"GDRE Tools returned an unrecognized bytecode revision {header.version}"
+                            f"GDRE Tools returned an unknown bytecode revision {header.version}"
                         )
                     temp_output = target.with_name(target.name + ".opengds-tmp")
                     try:
