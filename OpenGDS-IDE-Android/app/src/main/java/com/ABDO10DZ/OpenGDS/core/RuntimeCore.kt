@@ -49,22 +49,25 @@ class BackendBridge {
     fun validateCandidate(path: String): JSONObject = JSONObject(module.callAttr("validate_backend", path).toString())
     fun setCancelFlagFile(path: String) { module.callAttr("set_cancel_flag_file", path) }
     fun info(path: String): String = module.callAttr("info", path).toString()
-    fun decompile(path: String): String = module.callAttr("decompile", path).toString()
+    fun decompile(path: String, gdreToolsPath: String = ""): String =
+        module.callAttr("decompile", path, gdreToolsPath).toString()
     fun validateGdc(path: String): JSONObject = JSONObject(module.callAttr("validate_gdc", path).toString())
     fun report(mode: String, path: String): String = module.callAttr("report", mode, path).toString()
-    fun decompileAll(folder: String, force: Boolean, continueOnError: Boolean): JSONObject =
-        JSONObject(module.callAttr("decompile_all", folder, force, continueOnError).toString())
+    fun decompileAll(folder: String, force: Boolean, continueOnError: Boolean,
+                      gdreToolsPath: String = ""): JSONObject =
+        JSONObject(module.callAttr("decompile_all", folder, force, continueOnError,
+            gdreToolsPath).toString())
     fun compileAll(folder: String, compressed: Boolean, tabSize: Int, force: Boolean,
                     continueOnError: Boolean, bytecodeVersion: Int = 101,
-                    engineVersion: String = ""): JSONObject =
+                    engineVersion: String = "", gdreToolsPath: String = ""): JSONObject =
         JSONObject(module.callAttr("compile_all", folder, compressed, tabSize, force,
-            continueOnError, bytecodeVersion, engineVersion).toString())
+            continueOnError, bytecodeVersion, engineVersion, gdreToolsPath).toString())
 
     fun compile(source: String, output: String, compressed: Boolean, tabSize: Int,
                 force: Boolean, bytecodeVersion: Int = 101,
-                engineVersion: String = ""): JSONObject {
+                engineVersion: String = "", gdreToolsPath: String = ""): JSONObject {
         return JSONObject(module.callAttr("compile_source", source, output, compressed,
-            tabSize, force, bytecodeVersion, engineVersion).toString())
+            tabSize, force, bytecodeVersion, engineVersion, gdreToolsPath).toString())
     }
 }
 
@@ -109,6 +112,8 @@ object SettingsStore {
     fun setBytecodeVersion(context: Context, value: Int) = prefs(context).edit().putInt("bytecode_version", if (value == 100 || value == 0) value else 101).apply()
     fun engineVersion(context: Context) = prefs(context).getString("engine_version", "") ?: ""
     fun setEngineVersion(context: Context, value: String) = prefs(context).edit().putString("engine_version", value.trim()).apply()
+    fun gdreToolsPath(context: Context) = prefs(context).getString("gdre_tools_path", "") ?: ""
+    fun setGdreToolsPath(context: Context, value: String) = prefs(context).edit().putString("gdre_tools_path", value.trim()).apply()
     fun overwrite(context: Context) = prefs(context).getBoolean("overwrite", false)
     fun setOverwrite(context: Context, value: Boolean) = prefs(context).edit().putBoolean("overwrite", value).apply()
     fun continueOnError(context: Context) = prefs(context).getBoolean("continue_on_error", true)
