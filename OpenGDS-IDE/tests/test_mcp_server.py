@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mcp_server import OpenGDSMCPService
+from mcp_server import OpenGDSMCPService, build_server
 
 
 class FakeBackend:
@@ -194,6 +194,45 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
         self.assertIsNone(self.service._report_path(str(alias)))
         self.assertIsNone(self.service._report_path("../main.gd"))
         self.assertEqual(self.service._report_path(str(source)), "main.gd")
+
+    def test_registers_core_and_project_intelligence_mcp_tools(self):
+        import sys
+        import types
+
+        class FakeFastMCP:
+            def __init__(self, name, instructions=""):
+                self.name = name
+                self.instructions = instructions
+                self.tools = {}
+
+            def tool(self):
+                def register(function):
+                    self.tools[function.__name__] = function
+                    return function
+                return register
+
+        mcp_module = types.ModuleType("mcp")
+        mcp_module.__path__ = []
+        server_module = types.ModuleType("mcp.server")
+        server_module.__path__ = []
+        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = FakeFastMCP
+        with patch.dict(sys.modules, {
+            "mcp": mcp_module,
+            "mcp.server": server_module,
+            "mcp.server.fastmcp": fastmcp_module,
+        }):
+            server = build_server(self.service)
+        expected = {
+            "list_project_files", "read_project_file", "search_project_text",
+            "inspect_gdsc", "decompile_preview", "compile_check",
+            "refresh_project_index", "project_index_status", "search_project_symbols",
+            "summarize_project_architecture", "trace_project_symbol", "related_project_files",
+            "estimate_change_impact", "review_source_file", "review_workspace",
+            "analyze_project_error", "discover_validation_tasks", "select_relevant_tests",
+        }
+        self.assertEqual(set(server.tools), expected)
+        self.assertIn("never edits workspace files", server.instructions)
 
 
 if __name__ == "__main__":
