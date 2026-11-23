@@ -71,6 +71,7 @@ data class OpenGDSState(
     val compressed: Boolean = true,
     val tabSize: Int = 4,
     val bytecodeVersion: Int = 101,
+    val engineVersion: String = "",
     val overwrite: Boolean = false,
     val continueOnError: Boolean = true,
     val outputDirectoryConfigured: Boolean = false,
@@ -109,6 +110,7 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
         compressed = SettingsStore.compressed(getApplication()),
         tabSize = SettingsStore.tabSize(getApplication()),
         bytecodeVersion = SettingsStore.bytecodeVersion(getApplication()),
+        engineVersion = SettingsStore.engineVersion(getApplication()),
         overwrite = SettingsStore.overwrite(getApplication()),
         continueOnError = SettingsStore.continueOnError(getApplication()),
         outputDirectoryConfigured = SettingsStore.outputTreeUri(getApplication()) != null,
@@ -490,9 +492,13 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
     fun setCompressed(value: Boolean) { SettingsStore.setCompressed(getApplication(), value); mutate { copy(compressed = value) } }
     fun setTabSize(value: Int) { SettingsStore.setTabSize(getApplication(), value); mutate { copy(tabSize = value) } }
     fun setBytecodeVersion(value: Int) {
-        val safe = if (value == 100) 100 else 101
+        val safe = if (value == 100 || value == 0) value else 101
         SettingsStore.setBytecodeVersion(getApplication(), safe)
         mutate { copy(bytecodeVersion = safe) }
+    }
+    fun setEngineVersion(value: String) {
+        SettingsStore.setEngineVersion(getApplication(), value)
+        mutate { copy(engineVersion = value.trim()) }
     }
     fun setOverwrite(value: Boolean) { SettingsStore.setOverwrite(getApplication(), value); mutate { copy(overwrite = value) } }
     fun setContinueOnError(value: Boolean) { SettingsStore.setContinueOnError(getApplication(), value); mutate { copy(continueOnError = value) } }
@@ -1128,7 +1134,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                 if (target.exists()) File(target.absolutePath + ".bak").writeBytes(target.readBytes())
                 val result = backend.compile(current.editorText, target.absolutePath,
                     SettingsStore.compressed(getApplication()), SettingsStore.tabSize(getApplication()),
-                    overwrite, SettingsStore.bytecodeVersion(getApplication()))
+                    overwrite, SettingsStore.bytecodeVersion(getApplication()),
+                    SettingsStore.engineVersion(getApplication()))
                 LogStore.core("Compiled ${file.relativePath} -> ${target.name}; ${result.optInt("tokens")} tokens; ${result.optString("sha256")}.")
                 withContext(Dispatchers.Main) {
                     mutate {
@@ -1214,7 +1221,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                         SettingsStore.tabSize(getApplication()),
                         true,
                         false,
-                        SettingsStore.bytecodeVersion(getApplication())
+                        SettingsStore.bytecodeVersion(getApplication()),
+                        SettingsStore.engineVersion(getApplication())
                     )
                     val messages = compiled.optJSONArray("messages")
                     if (messages != null) for (i in 0 until messages.length()) LogStore.core(messages.optString(i))
@@ -1380,7 +1388,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                     SettingsStore.tabSize(getApplication()),
                     force,
                     SettingsStore.continueOnError(getApplication()),
-                    SettingsStore.bytecodeVersion(getApplication())
+                    SettingsStore.bytecodeVersion(getApplication()),
+                    SettingsStore.engineVersion(getApplication())
                 )
                 val messages = result.optJSONArray("messages")
                 if (messages != null) for (i in 0 until messages.length()) LogStore.core(messages.optString(i))
