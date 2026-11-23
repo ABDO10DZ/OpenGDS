@@ -252,12 +252,37 @@ class OpenGDSBackend:
     def compile(self, source: str | Path, output: str | Path | None = None,
                 compressed: bool = True, overwrite: bool = False, tab_size: int = 4,
                 continue_on_error: bool = False, cancel_event=None,
-                bytecode_version: int = 101) -> subprocess.CompletedProcess:
-        if int(bytecode_version) != 101:
-            if int(bytecode_version) != 100:
+                bytecode_version: int = 101, engine_version: str = "") -> subprocess.CompletedProcess:
+        if int(bytecode_version) not in (100, 101):
+            if not engine_version.strip():
                 raise compat.ExternalBytecodeToolRequired(
-                    f"GDSC v{bytecode_version} compilation requires the legacy GDRE Tools adapter."
+                    "Legacy GDSC compilation requires an explicit Godot engine version "
+                    "(for example 3.5.0) and an installed GDRE Tools executable."
                 )
+            source_path = Path(source).expanduser().resolve()
+            if not source_path.is_file():
+                raise FileNotFoundError(source_path)
+            target = Path(output).expanduser().resolve() if output else source_path.with_suffix(".gdc")
+            if target.exists() and not overwrite:
+                raise BackendError(f"Output already exists: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="opengds-gdre-", dir=target.parent) as stage_dir:
+                staged = Path(stage_dir) / "compiled.gdc"
+                compat.compile_legacy_file(source_path, staged, engine_version.strip(), timeout=self.default_timeout)
+                header = compat.inspect_header(staged.read_bytes())
+                if not header.profile or header.profile.capability != "gdre":
+                    raise compat.GDSCCompatibilityError(
+                        f"GDRE Tools output revision {header.version} is not a recognized legacy GDSC version."
+                    )
+                os.replace(staged, target)
+            message = (
+                f"Compiled {source_path} -> {target}; legacy GDSC v{header.version}; "
+                f"Godot {engine_version.strip()}"
+            )
+            return subprocess.CompletedProcess(
+                ["gdre_tools", "--compile", str(source_path)], 0, message
+            )
+        if int(bytecode_version) != 101:
             source_path = Path(source).expanduser().resolve()
             if not source_path.is_file():
                 raise FileNotFoundError(source_path)
