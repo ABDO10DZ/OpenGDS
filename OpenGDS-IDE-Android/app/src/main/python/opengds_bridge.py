@@ -110,8 +110,10 @@ def validate_backend(path: str) -> str:
     """Load a candidate in isolation without changing the active backend."""
     module, candidate = _load_candidate(path)
     return json.dumps({
-        "valid": True, "path": str(candidate), "api": "GDSC v101",
+        "valid": True, "path": str(candidate), "api": "GDSC v100/v101",
         "compiler": callable(module.compile_gd), "decompiler": callable(module.reconstruct),
+        "compatibility_versions": [100, 101],
+        "legacy_versions_detected": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
     })
 
 
@@ -121,7 +123,7 @@ def configure_backend(path: str) -> str:
     module, candidate = _load_candidate(path)
     _backend = module
     _backend_path = str(candidate)
-    return json.dumps({"loaded": True, "path": _backend_path, "api": "GDSC v101"})
+    return json.dumps({"loaded": True, "path": _backend_path, "api": "GDSC v100/v101"})
 
 
 def _core():
@@ -136,14 +138,13 @@ def backend_status() -> str:
         "path": _backend_path,
         "backend": "OpenGDS.py",
         "bytecode": 101,
+        "compatibility_versions": [100, 101],
+        "legacy_versions_detected": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
     })
 
 
 def info(path: str) -> str:
-    _check_cancelled()
-    result = _core().info_report(path)
-    _check_cancelled()
-    return result
+    return report("info", path)
 
 
 def decompile(path: str) -> str:
@@ -263,7 +264,8 @@ def debug(path: str, breakpoint_lines=None, show_tokens: bool = False,
     """Run native static GDSC diagnostics and resolve optional source breakpoints."""
     _check_cancelled()
     core = _core()
-    decoded = core.decode_file(path)
+    data = Path(path).read_bytes()
+    _header, decoded = compat.decode_compatible(data, core)
     _check_cancelled()
     result = core.dbg_report(
         path, decoded, breakpoints=breakpoint_lines or [],
