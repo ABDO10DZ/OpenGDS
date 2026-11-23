@@ -128,7 +128,7 @@ class OpenGDSMCPServiceTests(unittest.TestCase):
     def test_review_tools_are_bounded_read_only_and_redact_secrets(self):
         token = "sk-proj-1234567890abcdefghijklmnop"
         (self.root / "danger.py").write_text(
-            "eval(user_input)\nprint('" + token + "')\n", encoding="utf-8"
+            "eval(user_input)  # " + token + "\n", encoding="utf-8"
         )
         before = (self.root / "danger.py").read_bytes()
         reviewed = self.service.review_source_file("danger.py")
