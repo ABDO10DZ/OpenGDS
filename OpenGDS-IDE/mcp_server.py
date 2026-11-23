@@ -21,6 +21,7 @@ from project_debug import triage_error
 from project_review import review_file
 from project_tasks import discover_project_tasks
 from project_validation import select_tests
+from ide_ipc import IDEControlIPCClient, IDE_CONTROL_ACTIONS
 
 
 EXCLUDED_DIRS = {
@@ -44,13 +45,14 @@ MAX_GDSCRIPT_BYTES = 5 * 1024 * 1024
 class OpenGDSMCPService:
     """Read-only project tools plus isolated compile validation."""
 
-    def __init__(self, workspace: str | Path, backend=None, *, cache_root: str | Path | None = None):
+    def __init__(self, workspace: str | Path, backend=None, *, cache_root: str | Path | None = None, ide_client=None):
         self.workspace = Path(workspace).expanduser().resolve()
         if not self.workspace.is_dir():
             raise NotADirectoryError(self.workspace)
         self.backend = backend or OpenGDSBackend()
         self.cache_root = Path(cache_root).expanduser() if cache_root is not None else None
         self._project_index: ProjectIndex | None = None
+        self.ide_client = ide_client or IDEControlIPCClient(self.workspace)
 
     @staticmethod
     def _redact_text(value: object) -> str:
@@ -358,6 +360,12 @@ class OpenGDSMCPService:
             "note": "External paths are omitted; all returned paths are validated workspace-relative files. Secret-like values are redacted.",
         }
 
+    def control_ide(self, name: str, args: dict | None = None) -> dict:
+        """Call one authenticated, workspace-matched, view/navigation-only IDE action."""
+        if not isinstance(name, str) or name not in IDE_CONTROL_ACTIONS:
+            raise ValueError("IDE action is not allow-listed.")
+        return self.ide_client.call(name, dict(args or {}))
+
     def compile_check(self, path: str, compressed: bool = True, tab_size: int = 4) -> dict:
         source = self.safe_path(path)
         if not source.is_file() or source.suffix.lower() != ".gd":
@@ -393,6 +401,9 @@ def build_server(service: OpenGDSMCPService):
             "validation-task discovery and temporary compile checks. It also provides read-only project "
             "resources and workflow prompts: resources summarize workspace inventory, indexed architecture "
             "and validation tasks; prompts guide clients to call tools but do not invoke tools themselves. "
+            "When the user explicitly enables local IDE navigation in the GUI, authenticated MCP tools can read IDE "
+            "state/diagnostics/debug metadata and open/navigate files or focus allow-listed panels. The bridge is loopback-only, "
+            "OS-keyring authenticated, bound to the matching workspace, and exposes no edit, shell, or debugger execution actions. "
             "It never edits workspace files or executes arbitrary shell commands; task commands are suggestions "
             "and the symbol index is kept in the local OS user cache outside the workspace."
         ),
@@ -489,6 +500,36 @@ def build_server(service: OpenGDSMCPService):
         """Rank likely Python tests for explicit changed workspace paths; returns commands only, never runs them."""
         return service.select_relevant_tests(changed_paths)
 
+
+    @server.tool()
+    def ide_get_state() -> dict:
+        """Read active editor, cursor and tabs from the matching running IDE instance."""
+        return service.control_ide("ide_get_state")
+
+    @server.tool()
+    def ide_get_diagnostics() -> dict:
+        """Read bounded, redacted diagnostics from the running IDE Problems panel."""
+        return service.control_ide("ide_get_diagnostics")
+
+    @server.tool()
+    def ide_get_debug_state() -> dict:
+        """Read safe Godot debugger state, stack locations and breakpoints; no execution control."""
+        return service.control_ide("ide_get_debug_state")
+
+    @server.tool()
+    def ide_open_file(path: str) -> dict:
+        """Open an existing, non-sensitive workspace-relative file in the IDE; view operation only."""
+        return service.control_ide("ide_open_file", {"path": path})
+
+    @server.tool()
+    def ide_go_to_line(line: int, column: int = 0) -> dict:
+        """Navigate the active IDE editor to a line and column; view operation only."""
+        return service.control_ide("ide_go_to_line", {"line": line, "column": column})
+
+    @server.tool()
+    def ide_focus_panel(panel: str) -> dict:
+        """Show an allow-listed IDE panel: explorer, source_control, code_insight, ai_assistant or output."""
+        return service.control_ide("ide_focus_panel", {"panel": panel})
 
     # Stable, bounded resources let clients preload project context without
     # embedding source files or exposing the local workspace/cache path.
