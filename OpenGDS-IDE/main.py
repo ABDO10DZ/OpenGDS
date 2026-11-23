@@ -607,7 +607,7 @@ class SettingsDialog(QDialog):
         self.compile_bytecode_version = QComboBox()
         self.compile_bytecode_version.addItem("GDSC v101 — Godot 4.5+", 101)
         self.compile_bytecode_version.addItem("GDSC v100 — Godot 4.3–4.4", 100)
-        self.compile_bytecode_version.addItem("Legacy — GDRE Tools", 0)
+        self.compile_bytecode_version.addItem("GDRE / Custom — GDRE Tools", 0)
         target_version = int(project.get("compile", {}).get("bytecode_version", 101))
         if target_version not in (0, 100, 101): target_version = 101
         self.compile_bytecode_version.setCurrentIndex(max(0, self.compile_bytecode_version.findData(target_version)))
