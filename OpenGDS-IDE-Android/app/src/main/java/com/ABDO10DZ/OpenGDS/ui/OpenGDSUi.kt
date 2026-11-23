@@ -1653,8 +1653,17 @@ private fun SettingsPage(
             placeholder = { Text("e.g. 3.5.0, 4.3.0, or commit hash") },
             enabled = state.bytecodeVersion == 0
         )
+        OutlinedTextField(
+            value = state.gdreToolsPath,
+            onValueChange = model::setGdreToolsPath,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("GDRE executable path (optional)") },
+            placeholder = { Text("/data/user/0/.../gdre_tools") },
+            enabled = state.bytecodeVersion == 0
+        )
         Text(
-            "GDRE mode uses the optional GDRE_TOOLS executable or gdre_tools on PATH. Enter an exact engine release or commit for legacy and custom builds; single-file, batch, and repack builds use the same target.",
+            "GDRE mode uses this executable path first. Leave it blank to search GDRE_TOOLS or gdre_tools on PATH. The binary must be executable and built for this Android device ABI. The selected engine target is shared by single-file, batch, repack and decompile operations.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
