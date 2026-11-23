@@ -71,8 +71,8 @@ Unknown extra JSON fields are retained when loaded/saved. Missing known fields a
 
 - Prefer relative paths for portable workspaces.
 - `root` is resolved relative to the descriptor location.
-- `compile.bytecode_version` selects GDSC v100 (Godot 4.3–4.4) or v101 (Godot 4.5+); v101 is the default. Use `0` to compile through GDRE Tools for legacy releases or custom engine builds.
-- `compile.engine_version` supplies the exact GDRE target release or commit (for example `3.5.0`, `4.3.0`, or a commit hash) when `bytecode_version` is `0`; configure `GDRE_TOOLS` or add `gdre_tools` to `PATH`.
+- `compile.bytecode_version` selects GDSC v100 (Godot 4.3–4.4) or v101 (Godot 4.5+); v101 is the default. Godot 4.0–4.2 did not emit compiled `.gdc` files. Use `0` to compile through GDRE Tools for legacy releases or custom engine builds.
+- `compile.engine_version` supplies the exact GDRE target release or commit (for example `3.5.0`, `4.3.0`, or a commit hash) when `bytecode_version` is `0`; configure `GDRE_TOOLS` or add `gdre_tools` to `PATH`. Legacy bytecode revisions are 1–13; revision 10 is shared across Godot 2.x and 3.0, so the exact engine target matters.
 - `compile.output_directory` is resolved relative to the workspace root unless it is an absolute path. An absolute output path is useful when compiled artifacts are stored outside the project.
 - `backend` and `godot_executable` can be absolute executable/file paths.
 - `debug.scene` is a Godot resource path such as `res://scenes/main.tscn`.
