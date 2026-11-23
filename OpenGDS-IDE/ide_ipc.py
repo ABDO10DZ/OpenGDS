@@ -94,8 +94,12 @@ class _IDEWorkspaceMismatch(RuntimeError):
     """Raised when an IDE instance changed projects before executing an IPC action."""
 
 
+class _IDEAuthenticationError(RuntimeError):
+    """Raised when a registry entry no longer authenticates to its local server."""
+
+
 def _send_json(stream, payload: dict[str, Any]) -> None:
-    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     if len(raw) > MAX_RESPONSE_BYTES:
         raw = json.dumps({
             "ok": False,
@@ -126,7 +130,7 @@ class _IDEControlRequestHandler(socketserver.StreamRequestHandler):
             return
         supplied = request.get("token")
         if not isinstance(supplied, str) or not hmac.compare_digest(supplied, self.server.token):
-            _send_json(self.wfile, {"ok": False, "error": "Unauthorized local IDE-control request."})
+            _send_json(self.wfile, {"ok": False, "code": "unauthorized", "error": "Unauthorized local IDE-control request."})
             return
         name = request.get("name")
         args = request.get("args")
@@ -354,6 +358,8 @@ class IDEControlIPCClient:
             raise RuntimeError("The local IDE returned an invalid IPC response.") from None
         if isinstance(response, dict) and response.get("code") == "workspace_mismatch":
             raise _IDEWorkspaceMismatch(str(response.get("error", "Workspace identity mismatch."))[:1000])
+        if isinstance(response, dict) and response.get("code") == "unauthorized":
+            raise _IDEAuthenticationError(str(response.get("error", "The local IDE rejected authentication."))[:1000])
         if not isinstance(response, dict) or response.get("ok") is not True or not isinstance(response.get("result"), dict):
             message = response.get("error", "The local IDE rejected the request.") if isinstance(response, dict) else "Invalid local IDE response."
             raise RuntimeError(str(message)[:1000])
@@ -377,7 +383,7 @@ class IDEControlIPCClient:
                 if not isinstance(token, str) or not token:
                     continue
                 return self._request(registry, token, expected_workspace, name, args)
-            except _IDEWorkspaceMismatch:
+            except (_IDEWorkspaceMismatch, _IDEAuthenticationError):
                 continue
             except (OSError, TimeoutError):
                 continue
