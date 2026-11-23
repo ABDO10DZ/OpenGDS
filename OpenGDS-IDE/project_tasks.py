@@ -6,6 +6,7 @@ the agent must queue them through its existing approval workflow before executio
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,14 +26,47 @@ def discover_project_tasks(workspace: str | Path, *, safe_path=None) -> list[dic
     python_markers = ("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini")
     has_python_tests = any(exists(name) for name in python_markers)
     tests_dir = root / "tests"
-    has_python_tests = has_python_tests or (
-        tests_dir.is_dir() and any(tests_dir.rglob("test_*.py"))
-    )
+    if safe_path:
+        try:
+            tests_dir = safe_path("tests")
+        except (OSError, ValueError, PermissionError):
+            tests_dir = root / ".blocked-tests"
+    tests_dir_available = tests_dir.is_dir() and not tests_dir.is_symlink()
+    scanned_test_entries = 0
+    if tests_dir_available and not has_python_tests:
+        for current, dirs, files in os.walk(tests_dir, followlinks=False):
+            base = Path(current)
+            dirs[:] = [
+                name for name in dirs
+                if name.lower() not in {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist"}
+                and not (base / name).is_symlink()
+            ]
+            for name in files:
+                scanned_test_entries += 1
+                if scanned_test_entries > 5000:
+                    # Be conservative when the bounded scan is exhausted.
+                    has_python_tests = True
+                    break
+                if name.startswith("test_") and name.endswith(".py"):
+                    candidate = (base / name)
+                    if candidate.is_symlink():
+                        continue
+                    if safe_path:
+                        relative = candidate.relative_to(root).as_posix()
+                        try:
+                            if not safe_path(relative).is_file():
+                                continue
+                        except (OSError, ValueError, PermissionError):
+                            continue
+                    has_python_tests = True
+                    break
+            if has_python_tests:
+                break
     if has_python_tests:
         tasks.append({
             "id": "python-unittest",
             "label": "Python unit tests",
-            "command": [sys.executable, "-m", "unittest", "discover", *(["-s", "tests"] if tests_dir.is_dir() else []), "-v"],
+            "command": [sys.executable, "-m", "unittest", "discover", *(["-s", "tests"] if tests_dir_available else []), "-v"],
             "cwd": ".",
             "reason": "Run the project's Python unittest discovery suite",
             "source": "Python test configuration or tests directory",
