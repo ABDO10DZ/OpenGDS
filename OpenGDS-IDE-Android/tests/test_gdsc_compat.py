@@ -125,6 +125,29 @@ class GDSCCompatibilityTests(unittest.TestCase):
         with self.assertRaises(compat.ExternalBytecodeToolRequired):
             compat.decode_compatible(data, self.core)
 
+    def test_compressed_v100_payload_decodes_and_round_trips(self):
+        try:
+            import zstandard
+        except ImportError:
+            self.skipTest("zstandard is not installed")
+        data = structured_container(100, [
+            short_token(83, 1), long_token(6, 11, 2)
+        ], v100=True)
+        raw = data[12:]
+        compressed = b"GDSC" + struct.pack("<II", 100, len(raw)) + zstandard.ZstdCompressor(level=3).compress(raw)
+        header, decoded = compat.decode_compatible(compressed, self.core)
+        self.assertEqual(100, header.version)
+        self.assertEqual({1: 10, 2: 20}, decoded[3])
+        self.assertEqual({1: 4, 2: 8}, decoded[4])
+        v101 = structured_container(101, [
+            long_token(1, 0, 1), long_token(84, 0, 2), long_token(97, 0, 3)
+        ])
+        encoded = compat.encode_v100(v101, self.core, compressed=True)
+        restored_header, restored = compat.decode_compatible(encoded, self.core)
+        self.assertEqual(100, restored_header.version)
+        self.assertEqual(compat._signature(self.core.decode_gdsc(v101)),
+                         compat._signature(restored))
+
     def test_v101_triple_period_is_not_downconverted(self):
         with self.assertRaises(compat.GDSCCompatibilityError):
             compat._translate_tokens(short_token(83, 1), 0, 1, 101, 100)
