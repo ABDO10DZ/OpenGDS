@@ -72,6 +72,7 @@ data class OpenGDSState(
     val tabSize: Int = 4,
     val bytecodeVersion: Int = 101,
     val engineVersion: String = "",
+    val gdreToolsPath: String = "",
     val overwrite: Boolean = false,
     val continueOnError: Boolean = true,
     val outputDirectoryConfigured: Boolean = false,
@@ -111,6 +112,7 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
         tabSize = SettingsStore.tabSize(getApplication()),
         bytecodeVersion = SettingsStore.bytecodeVersion(getApplication()),
         engineVersion = SettingsStore.engineVersion(getApplication()),
+        gdreToolsPath = SettingsStore.gdreToolsPath(getApplication()),
         overwrite = SettingsStore.overwrite(getApplication()),
         continueOnError = SettingsStore.continueOnError(getApplication()),
         outputDirectoryConfigured = SettingsStore.outputTreeUri(getApplication()) != null,
@@ -499,6 +501,10 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
     fun setEngineVersion(value: String) {
         SettingsStore.setEngineVersion(getApplication(), value)
         mutate { copy(engineVersion = value.trim()) }
+    }
+    fun setGdreToolsPath(value: String) {
+        SettingsStore.setGdreToolsPath(getApplication(), value)
+        mutate { copy(gdreToolsPath = value.trim()) }
     }
     fun setOverwrite(value: Boolean) { SettingsStore.setOverwrite(getApplication(), value); mutate { copy(overwrite = value) } }
     fun setContinueOnError(value: Boolean) { SettingsStore.setContinueOnError(getApplication(), value); mutate { copy(continueOnError = value) } }
@@ -1084,7 +1090,7 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                 if (target.exists() && !SettingsStore.overwrite(getApplication())) {
                     throw IllegalStateException("${target.name} already exists. Enable 'Replace existing .gd/.gdc outputs' in Settings to replace it.")
                 }
-                val source = backend.decompile(file.file.absolutePath)
+                val source = backend.decompile(file.file.absolutePath, SettingsStore.gdreToolsPath(getApplication()))
                 AtomicFileWriter.writeText(target, source, keepBackup = true)
                 val relativePath = file.relativePath.substringBeforeLast('.', file.relativePath) + ".gd"
                 val generated = ProjectFile(target, relativePath, "gd", target.length(), false)
@@ -1135,7 +1141,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                 val result = backend.compile(current.editorText, target.absolutePath,
                     SettingsStore.compressed(getApplication()), SettingsStore.tabSize(getApplication()),
                     overwrite, SettingsStore.bytecodeVersion(getApplication()),
-                    SettingsStore.engineVersion(getApplication()))
+                    SettingsStore.engineVersion(getApplication()),
+                    SettingsStore.gdreToolsPath(getApplication()))
                 LogStore.core("Compiled ${file.relativePath} -> ${target.name}; ${result.optInt("tokens")} tokens; ${result.optString("sha256")}.")
                 withContext(Dispatchers.Main) {
                     mutate {
@@ -1222,7 +1229,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                         true,
                         false,
                         SettingsStore.bytecodeVersion(getApplication()),
-                        SettingsStore.engineVersion(getApplication())
+                        SettingsStore.engineVersion(getApplication()),
+                        SettingsStore.gdreToolsPath(getApplication())
                     )
                     val messages = compiled.optJSONArray("messages")
                     if (messages != null) for (i in 0 until messages.length()) LogStore.core(messages.optString(i))
@@ -1328,7 +1336,9 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val force = SettingsStore.overwrite(getApplication())
-                val result = backend.decompileAll(File(root, "project").absolutePath, force, SettingsStore.continueOnError(getApplication()))
+                val result = backend.decompileAll(File(root, "project").absolutePath, force,
+                    SettingsStore.continueOnError(getApplication()),
+                    SettingsStore.gdreToolsPath(getApplication()))
                 val messages = result.optJSONArray("messages")
                 if (messages != null) for (i in 0 until messages.length()) LogStore.core(messages.optString(i))
                 val ok = result.optInt("ok")
@@ -1389,7 +1399,8 @@ class OpenGDSViewModel(application: Application) : AndroidViewModel(application)
                     force,
                     SettingsStore.continueOnError(getApplication()),
                     SettingsStore.bytecodeVersion(getApplication()),
-                    SettingsStore.engineVersion(getApplication())
+                    SettingsStore.engineVersion(getApplication()),
+                    SettingsStore.gdreToolsPath(getApplication())
                 )
                 val messages = result.optJSONArray("messages")
                 if (messages != null) for (i in 0 until messages.length()) LogStore.core(messages.optString(i))
