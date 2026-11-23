@@ -15,6 +15,8 @@ import tempfile
 import traceback
 from pathlib import Path
 
+import gdsc_compat as compat
+
 _backend = None
 _backend_path = None
 _cancel_flag_file = None
@@ -147,8 +149,14 @@ def info(path: str) -> str:
 def decompile(path: str) -> str:
     _check_cancelled()
     core = _core()
-    decoded = core.decode_file(path)
-    source = core.reconstruct(decoded[1], decoded[2], decoded[3], decoded[4], decoded[5])
+    data = Path(path).read_bytes()
+    header = compat.inspect_header(data)
+    if header.version in (100, 101):
+        _header, source = compat.decompile_data(data, core)
+    elif header.profile and header.profile.capability == "gdre":
+        source = compat.decompile_legacy_file(path)
+    else:
+        raise compat.GDSCCompatibilityError(f"Unsupported GDSC revision {header.version}")
     _check_cancelled()
     return source
 
@@ -156,19 +164,25 @@ def decompile(path: str) -> str:
 def validate_gdc(path: str) -> str:
     _check_cancelled()
     core = _core()
-    decoded = core.decode_file(path)
+    data = Path(path).read_bytes()
+    header, decoded = compat.decode_compatible(data, core)
+    diagnostics = core.validate_gdc_structure(decoded)
+    errors = [item for item in diagnostics if item[0] == "ERROR"]
     _check_cancelled()
     return json.dumps({
-        "valid": decoded[0] == 101,
-        "version": decoded[0],
+        "valid": not errors,
+        "version": header.version,
+        "engine_range": header.profile.engine_range if header.profile else "Unknown",
         "identifiers": len(decoded[1]),
         "constants": len(decoded[2]),
         "tokens": len(decoded[5]),
+        "errors": [{"code": item[1], "message": item[2]} for item in errors[:20]],
     })
 
 
 def compile_source(source: str, destination: str, compressed: bool = True,
-                   tab_size: int = 4, force: bool = False) -> str:
+                   tab_size: int = 4, force: bool = False,
+                   bytecode_version: int = 101) -> str:
     _check_cancelled()
     core = _core()
     dest = Path(destination)
@@ -176,11 +190,12 @@ def compile_source(source: str, destination: str, compressed: bool = True,
     if dest.exists() and not force:
         raise FileExistsError(f"Output exists (enable 'Replace existing .gd/.gdc outputs' in Settings): {dest}")
 
-    data = core.compile_gd(source, compress=bool(compressed), tab_size=int(tab_size))
+    data = compat.compile_data(source, core, bytecode_version=int(bytecode_version),
+                               compressed=bool(compressed), tab_size=int(tab_size))
     _check_cancelled()
-    decoded = core.decode_gdsc(data)
-    if decoded[0] != 101:
-        raise ValueError(f"Compiler produced unsupported GDSC version {decoded[0]}")
+    header, decoded = compat.decode_compatible(data, core)
+    if header.version != int(bytecode_version):
+        raise ValueError(f"Compiler produced GDSC v{header.version}, expected v{bytecode_version}")
     if not decoded[5] and source.strip():
         raise ValueError("Compiler produced an empty token stream for non-empty GDScript")
     structural_errors = [item for item in core.validate_gdc_structure(decoded) if item[0] == "ERROR"]
@@ -201,7 +216,7 @@ def compile_source(source: str, destination: str, compressed: bool = True,
         "sha256": hashlib.sha256(data).hexdigest(),
         "bytes": len(data),
         "tokens": len(decoded[5]),
-        "version": decoded[0],
+        "version": header.version,
         "compressed": bool(compressed),
     })
 
@@ -209,12 +224,23 @@ def compile_source(source: str, destination: str, compressed: bool = True,
 def report(mode: str, path: str) -> str:
     _check_cancelled()
     core = _core()
-    if mode == "info":
+    data = Path(path).read_bytes()
+    header = compat.inspect_header(data)
+    if header.version == 101 and mode == "info":
         result = core.info_report(path)
         _check_cancelled()
         return result
-    decoded = core.decode_file(path)
+    header, decoded = compat.decode_compatible(data, core)
     _check_cancelled()
+    if mode == "info":
+        return "\n".join([
+            f"FILE: {path}", f"GDSC version: {header.version}",
+            f"Godot range: {header.profile.engine_range if header.profile else 'Unknown'}",
+            f"Container bytes: {len(data)}",
+            f"Identifiers: {len(decoded[1])}", f"Constants: {len(decoded[2])}",
+            f"Tokens: {len(decoded[5])}",
+            "Structural validation: " + ("PASS" if not any(x[0] == "ERROR" for x in core.validate_gdc_structure(decoded)) else "FAIL"),
+        ])
     if mode == "audit":
         return core.audit_report(path, decoded)
     if mode == "consts":
@@ -222,11 +248,12 @@ def report(mode: str, path: str) -> str:
     if mode == "disasm":
         return core.disasm_report(path, decoded)
     if mode == "dbg":
-        result = core.dbg_report(path, decoded)
-        _check_cancelled()
-        return result
+        return core.dbg_report(path, decoded)
     if mode == "hexdump":
-        return core.hexdump(core.decode_payload(Path(path).read_bytes())[2])
+        _h, raw = compat._payload(data, core)
+        if header.version == 100:
+            return core.hexdump(raw)
+        return core.hexdump(core.decode_payload(data)[2])
     raise ValueError("Unsupported report mode: " + mode)
 
 
@@ -266,9 +293,9 @@ def decompile_all(folder: str, force: bool = False, continue_on_error: bool = Tr
     for source_file in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() == ".gdc"):
         try:
             _check_cancelled()
-            with source_file.open("rb") as stream:
-                header = stream.read(12)
-            if len(header) < 12 or header[:4] != b"GDSC" or struct.unpack_from("<I", header, 4)[0] != 101:
+            raw_data = source_file.read_bytes()
+            detected = compat.inspect_header(raw_data)
+            if not detected.profile or detected.version not in (100, 101) and detected.profile.capability != "gdre":
                 skipped += 1
                 continue
             target = source_file.with_suffix(".gd")
@@ -280,8 +307,10 @@ def decompile_all(folder: str, force: bool = False, continue_on_error: bool = Tr
                 continue
             if target.exists() and force:
                 target.with_name(target.name + ".bak").write_bytes(target.read_bytes())
-            decoded = core.decode_file(source_file)
-            source = core.reconstruct(decoded[1], decoded[2], decoded[3], decoded[4], decoded[5])
+            if detected.version in (100, 101):
+                _header, source = compat.decompile_data(raw_data, core)
+            else:
+                source = compat.decompile_legacy_file(source_file)
             _check_cancelled()
             tmp = target.with_name(target.name + ".opengds-tmp")
             try:
@@ -303,7 +332,8 @@ def decompile_all(folder: str, force: bool = False, continue_on_error: bool = Tr
 
 
 def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
-                force: bool = False, continue_on_error: bool = True) -> str:
+                force: bool = False, continue_on_error: bool = True,
+                bytecode_version: int = 101) -> str:
     core = _core()
     root = Path(folder)
     if not root.is_dir():
@@ -322,12 +352,15 @@ def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
                 continue
             if target.exists() and force:
                 target.with_name(target.name + ".bak").write_bytes(target.read_bytes())
-            data = core.compile_gd(source_file.read_text(encoding="utf-8-sig"),
-                                   compress=bool(compressed), tab_size=int(tab_size))
+            data = compat.compile_data(
+                source_file.read_text(encoding="utf-8-sig"), core,
+                bytecode_version=int(bytecode_version),
+                compressed=bool(compressed), tab_size=int(tab_size)
+            )
             _check_cancelled()
-            decoded = core.decode_gdsc(data)
-            if decoded[0] != 101:
-                raise ValueError(f"unsupported output version {decoded[0]}")
+            header, decoded = compat.decode_compatible(data, core)
+            if header.version != int(bytecode_version):
+                raise ValueError(f"unsupported output version {header.version}")
             structural_errors = [item for item in core.validate_gdc_structure(decoded) if item[0] == "ERROR"]
             if structural_errors:
                 summary = "; ".join(f"{code}: {message}" for _severity, code, message, _index in structural_errors[:8])
@@ -340,7 +373,7 @@ def compile_all(folder: str, compressed: bool = True, tab_size: int = 4,
                 if tmp.exists():
                     tmp.unlink()
             ok += 1
-            messages.append(f"[OK] {source_file} -> {target} tokens={len(decoded[5])} bytes={len(data)}")
+            messages.append(f"[OK] {source_file} -> {target} GDSC v{header.version} tokens={len(decoded[5])} bytes={len(data)}")
         except Exception as exc:
             if "cancelled by user" in str(exc).lower():
                 raise
