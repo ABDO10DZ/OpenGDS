@@ -1,0 +1,31 @@
+name: GDSC compatibility tests
+
+on:
+  push:
+    branches:
+      - development
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  compatibility:
+    name: Python compatibility (\${{ matrix.ide }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ide:
+          - OpenGDS-IDE
+          - OpenGDS-IDE-Android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile Python adapter and tests
+        working-directory: \${{ matrix.ide }}
+        run: python -m py_compile gdsc_compat.py tests/test_gdsc_compat.py
+      - name: Run compatibility regression tests
+        working-directory: \${{ matrix.ide }}
+        run: python -m unittest discover -s tests -p "test_gdsc_compat.py" -v
