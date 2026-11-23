@@ -22,6 +22,7 @@ The default filename created by the IDE is `file.ogds`, but any filename ending 
   "compile": {
     "compressed": true,
     "tab_size": 4,
+    "bytecode_version": 101,
     "overwrite": false,
     "continue_on_error": true,
     "output_directory": ".opengds/compiled",
@@ -58,7 +59,7 @@ The default filename created by the IDE is `file.ogds`, but any filename ending 
 | `godot_project` | string | Optional path relative to `root`, usually `project.godot`; empty for a plain workspace. |
 | `backend` | string | Optional path to `OpenGDS.py`; empty means use the copy shipped with the IDE. |
 | `godot_executable` | string | Optional Godot executable path; empty means auto-detect or ask. |
-| `compile` | object | GDSC compression, tab-size, overwrite/error policy, output directory and optional validation preference. |
+| `compile` | object | GDSC target bytecode (`100` or `101`), compression, tab-size, overwrite/error policy, output directory and optional validation preference. |
 | `debug` | object | OpenGDS runtime-debug, Godot scene/source mapping and static debugger settings. |
 | `editor` | object | Workspace/editor defaults reserved for IDE use. |
 
@@ -68,6 +69,7 @@ Unknown extra JSON fields are retained when loaded/saved. Missing known fields a
 
 - Prefer relative paths for portable workspaces.
 - `root` is resolved relative to the descriptor location.
+- `compile.bytecode_version` selects GDSC v100 (Godot 4.3–4.4) or v101 (Godot 4.5+); v101 is the default. Legacy Godot 1.x–3.x revisions are detected separately and require GDRE Tools.
 - `compile.output_directory` is resolved relative to the workspace root unless it is an absolute path. An absolute output path is useful when compiled artifacts are stored outside the project.
 - `backend` and `godot_executable` can be absolute executable/file paths.
 - `debug.scene` is a Godot resource path such as `res://scenes/main.tscn`.
