@@ -68,7 +68,8 @@ def iter_project_files(root: str | Path, suffix: str, *, include_compiled_output
 
 
 def compile_project(backend, root: str | Path, output_root: str | Path, *, compressed: bool = True,
-                    overwrite: bool = False, tab_size: int = 4, continue_on_error: bool = True) -> OperationSummary:
+                    overwrite: bool = False, tab_size: int = 4, continue_on_error: bool = True,
+                    bytecode_version: int = 101, engine_version: str = "") -> OperationSummary:
     root = Path(root).expanduser().resolve()
     output_root = Path(output_root).expanduser().resolve()
     sources = iter_project_files(root, ".gd")
@@ -83,7 +84,8 @@ def compile_project(backend, root: str | Path, output_root: str | Path, *, compr
             summary.skipped.append((source, f"Output already exists: {target}"))
             continue
         try:
-            backend.compile(source, target, compressed=compressed, overwrite=overwrite, tab_size=tab_size)
+            backend.compile(source, target, compressed=compressed, overwrite=overwrite, tab_size=tab_size,
+                            bytecode_version=bytecode_version, engine_version=engine_version)
             summary.succeeded.append(target)
         except Exception as exc:
             summary.failed.append((source, str(exc)))
@@ -93,7 +95,8 @@ def compile_project(backend, root: str | Path, output_root: str | Path, *, compr
 
 
 def decompile_project(backend, root: str | Path, output_root: str | Path, *, overwrite: bool = False,
-                      continue_on_error: bool = True, compiled_root: str | Path | None = None) -> OperationSummary:
+                      continue_on_error: bool = True, compiled_root: str | Path | None = None,
+                      engine_version: str = "") -> OperationSummary:
     root = Path(root).expanduser().resolve()
     output_root = Path(output_root).expanduser().resolve()
     sources: dict[Path, Path] = {}
@@ -122,7 +125,7 @@ def decompile_project(backend, root: str | Path, output_root: str | Path, *, ove
             summary.skipped.append((binary, f"Output already exists: {target}"))
             continue
         try:
-            source = backend.decompile(binary)
+            source = backend.decompile(binary, engine_version=engine_version) if engine_version else backend.decompile(binary)
             target.parent.mkdir(parents=True, exist_ok=True)
             temp = target.with_name(target.name + ".opengds-tmp")
             try:

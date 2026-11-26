@@ -155,4 +155,30 @@ class BackendTests(unittest.TestCase):
             src=Path(td)/"a.gd"; out=Path(td)/"a.gdc"; src.write_text('extends Node\nfunc f():\n    pass\n')
             backend.compile(src,out,compressed=False,overwrite=True)
             self.assertIn('VALIDATION: PASS',backend.inspect('info',out))
+
+    def test_v100_compile_inspect_and_decompile_use_compatibility_adapter(self):
+        root = Path(__file__).resolve().parents[1]
+        backend = OpenGDSBackend(root / "OpenGDS.py")
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "legacy-modern.gd"
+            binary = Path(td) / "legacy-modern.gdc"
+            source.write_text("extends Node\nfunc run():\n    return 42\n", encoding="utf-8")
+            backend.compile(source, binary, compressed=False, overwrite=True, bytecode_version=100)
+            import gdsc_compat
+            self.assertEqual(100, gdsc_compat.inspect_header(binary.read_bytes()).version)
+            self.assertIn("BYTECODE VERSION: 100", backend.inspect("info", binary))
+            self.assertIn("VALIDATION: PASS", backend.inspect("info", binary))
+            self.assertIn("return 42", backend.decompile(binary))
+
+    def test_legacy_header_info_identifies_godot_3_without_guessing_tokens(self):
+        import struct
+        root = Path(__file__).resolve().parents[1]
+        backend = OpenGDSBackend(root / "OpenGDS.py")
+        with tempfile.TemporaryDirectory() as td:
+            binary = Path(td) / "godot35.gdc"
+            binary.write_bytes(b"GDSC" + struct.pack("<II", 13, 0))
+            report = backend.inspect("info", binary)
+            self.assertIn("Godot 3.x", report)
+            self.assertIn("requires GDRE Tools", report)
+            self.assertIn("requires GDRE Tools", report)
 if __name__=="__main__":unittest.main()

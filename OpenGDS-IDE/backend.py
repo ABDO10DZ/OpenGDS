@@ -1,8 +1,9 @@
 """Safe subprocess adapter for the OpenGDS.py command-line backend."""
 from __future__ import annotations
-import os, sys, subprocess, logging, re, time, shutil
+import os, sys, subprocess, logging, re, time, shutil, tempfile, importlib.util, hashlib
 from pathlib import Path
 
+import gdsc_compat as compat
 from logging_system import log_event, log_directory, configure_logging
 
 class BackendError(RuntimeError): pass
@@ -46,6 +47,7 @@ class OpenGDSBackend:
         self.standalone_executable = (not self.embedded and self.script.suffix.lower() == ".exe")
         self.python_command = None if self.standalone_executable or self.embedded else find_python_command()
         self.default_timeout = 300
+        self._compat_core_module = None
         if not self.embedded and not self.script.is_file():
             raise FileNotFoundError(f"OpenGDS backend not found: {self.script}")
         if not self.embedded and not self.standalone_executable and not self.python_command:
@@ -63,8 +65,10 @@ class OpenGDSBackend:
         return [*(self.python_command or [sys.executable]), str(self.script), *map(str, args)]
 
     def run(self, *args: str, cwd: str | Path | None = None, timeout: int | None = None, cancel_event=None) -> subprocess.CompletedProcess:
-        command = self.command(*args)
         mode = str(args[0]) if args else "core"
+        if mode == "dcmp" and len(args) > 1 and Path(args[1]).expanduser().is_dir():
+            return self._decompile_folder_compat(args, cancel_event=cancel_event)
+        command = self.command(*args)
         default_category = "GDSCRIPT" if mode == "comp" else ("GODOT_DEBUG" if mode == "dbg" else "GDSC")
         log_event("BUILD", logging.INFO, f"Launching OpenGDS core: {command!r}; cwd={cwd or os.getcwd()}")
         core_log = log_directory() / "core.log"
@@ -171,9 +175,143 @@ class OpenGDSBackend:
             elif line.strip():
                 log_event(active_category, active_level, f"OpenGDS core trace: {line}")
 
+    def _compat_core(self):
+        """Load the bundled/source core for the v100 token adapter."""
+        if self._compat_core_module is not None:
+            return self._compat_core_module
+        if self.embedded:
+            import OpenGDS as core
+            self._compat_core_module = core
+            return core
+        core_path = self.script if self.script.suffix.lower() == ".py" else Path(__file__).with_name("OpenGDS.py")
+        if not core_path.is_file():
+            raise BackendError("GDSC v100 support requires an OpenGDS.py core beside the IDE or selected as its backend.")
+        module_name = "_opengds_compat_core_" + hashlib.sha256(str(core_path.resolve()).encode()).hexdigest()[:12]
+        spec = importlib.util.spec_from_file_location(module_name, core_path)
+        if spec is None or spec.loader is None:
+            raise BackendError(f"Cannot load OpenGDS core for bytecode compatibility: {core_path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+        self._compat_core_module = module
+        return module
+
+    def _decompile_folder_compat(self, args, cancel_event=None):
+        root = Path(args[1]).expanduser().resolve()
+        tail = [str(value) for value in args[2:]]
+        output_root = Path(str(root) + ".dcmp")
+        force = "--force" in tail
+        engine_version = ""
+        if "--outdir" in tail:
+            at = tail.index("--outdir")
+            if at + 1 >= len(tail):
+                raise ValueError("--outdir requires a directory")
+            output_root = Path(tail[at + 1]).expanduser().resolve()
+        if "--engine-version" in tail:
+            at = tail.index("--engine-version")
+            if at + 1 >= len(tail):
+                raise ValueError("--engine-version requires a Godot version or commit")
+            engine_version = tail[at + 1]
+        from project_ops import iter_project_files
+        output_root.mkdir(parents=True, exist_ok=True)
+        ok, failed, skipped, messages = 0, 0, 0, []
+        for binary in iter_project_files(root, ".gdc", include_compiled_output=True):
+            if cancel_event is not None and cancel_event.is_set():
+                raise BackendError("Operation cancelled by user")
+            try:
+                header = compat.inspect_header(binary.read_bytes())
+                if header.version == 101:
+                    source = self.run("dcmp", str(binary), cancel_event=cancel_event).stdout
+                elif header.version == 100:
+                    source = compat.decompile_data(binary.read_bytes(), self._compat_core())[1]
+                elif header.profile and header.profile.capability == "gdre":
+                    source = compat.decompile_legacy_file(binary, bytecode_hint=engine_version or None)
+                else:
+                    skipped += 1
+                    messages.append(f"[SKIP] {binary}: unknown GDSC revision {header.version}")
+                    continue
+                relative = binary.relative_to(root / ".opengds" / "compiled") if root / ".opengds" / "compiled" in binary.parents else binary.relative_to(root)
+                target = output_root / relative.with_suffix(".gd")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() and not force:
+                    skipped += 1
+                    messages.append(f"[SKIP] {binary}: output exists: {target}")
+                    continue
+                temp = target.with_name(target.name + ".opengds-tmp")
+                try:
+                    temp.write_text(source, encoding="utf-8", newline="\n")
+                    os.replace(temp, target)
+                finally:
+                    if temp.exists():
+                        temp.unlink()
+                ok += 1
+                messages.append(f"[OK] {binary} -> {target} (GDSC v{header.version})")
+            except Exception as exc:
+                failed += 1
+                messages.append(f"[ERROR] {binary}: {exc}")
+        report = "\n".join([
+            f"Folder decompile: {root}", f"Succeeded: {ok}",
+            f"Failed: {failed}", f"Skipped: {skipped}", *messages
+        ])
+        return subprocess.CompletedProcess(["opengds-compat", "dcmp", str(root)], 1 if failed else 0, report, "")
+
     def compile(self, source: str | Path, output: str | Path | None = None,
                 compressed: bool = True, overwrite: bool = False, tab_size: int = 4,
-                continue_on_error: bool = False, cancel_event=None) -> subprocess.CompletedProcess:
+                continue_on_error: bool = False, cancel_event=None,
+                bytecode_version: int = 101, engine_version: str = "") -> subprocess.CompletedProcess:
+        if int(bytecode_version) not in (100, 101):
+            if not engine_version.strip():
+                raise compat.ExternalBytecodeToolRequired(
+                    "Godot 1.x/2.x/3.x or custom bytecode compilation needs an exact engine version "
+                    "(for example 3.5.0) and GDRE Tools. Configure GDRE_TOOLS or add gdre_tools to PATH."
+                )
+            source_path = Path(source).expanduser().resolve()
+            if not source_path.is_file():
+                raise FileNotFoundError(source_path)
+            target = Path(output).expanduser().resolve() if output else source_path.with_suffix(".gdc")
+            if target.exists() and not overwrite:
+                raise BackendError(f"Output already exists: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="opengds-gdre-", dir=target.parent) as stage_dir:
+                staged = Path(stage_dir) / "compiled.gdc"
+                compat.compile_legacy_file(source_path, staged, engine_version.strip(), timeout=self.default_timeout)
+                header = compat.inspect_header(staged.read_bytes())
+                if not header.profile:
+                    raise compat.GDSCCompatibilityError(
+                        f"GDRE Tools output revision {header.version} is unknown to this OpenGDS build."
+                    )
+                os.replace(staged, target)
+            message = f"Compiled {source_path} -> {target}; GDSC v{header.version}; Godot {engine_version.strip()}"
+            return subprocess.CompletedProcess(["gdre_tools", "--compile", str(source_path)], 0, message, "")
+        if int(bytecode_version) == 100:
+            source_path = Path(source).expanduser().resolve()
+            if not source_path.is_file():
+                raise FileNotFoundError(source_path)
+            target = Path(output).expanduser().resolve() if output else source_path.with_suffix(".gdc")
+            if target.exists() and not overwrite:
+                raise BackendError(f"Output already exists: {target}")
+            data = compat.compile_data(
+                source_path.read_text(encoding="utf-8-sig"), self._compat_core(), 100,
+                compressed=compressed, tab_size=tab_size
+            )
+            header, decoded = compat.decode_compatible(data, self._compat_core())
+            errors = [item for item in self._compat_core().validate_gdc_structure(decoded) if item[0] == "ERROR"]
+            if header.version != 100 or errors:
+                raise BackendError("GDSC v100 failed structural validation: " + repr(errors[:5]))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temp = target.with_name(target.name + ".opengds-tmp")
+            try:
+                temp.write_bytes(data)
+                os.replace(temp, target)
+            finally:
+                if temp.exists():
+                    temp.unlink()
+            message = f"Compiled {source_path} -> {target}; GDSC v100; {len(decoded[5])} tokens"
+            return subprocess.CompletedProcess(["opengds-compat", "comp", str(source_path)], 0, message, "")
         args = ["comp", str(source), "--tab-size", str(tab_size)]
         if output: args += ["--output", str(output)]
         if not compressed: args.append("--no-compress")
@@ -184,13 +322,67 @@ class OpenGDSBackend:
     def diff(self, first: str | Path, second: str | Path) -> str:
         return self.run("diff", str(first), str(second)).stdout
 
-    def decompile(self, binary: str | Path, *, cancel_event=None) -> str:
-        return self.run("dcmp", str(binary), cancel_event=cancel_event).stdout
+    def decompile(self, binary: str | Path, *, engine_version: str = "", cancel_event=None) -> str:
+        source = Path(binary).expanduser().resolve()
+        header = compat.inspect_header(source.read_bytes())
+        if header.version == 100:
+            return compat.decompile_data(source.read_bytes(), self._compat_core())[1]
+        if header.version != 101:
+            if header.profile and header.profile.capability == "gdre":
+                return compat.decompile_legacy_file(source, bytecode_hint=engine_version.strip() or None,
+                                                    timeout=self.default_timeout)
+            raise compat.GDSCCompatibilityError(f"Unsupported GDSC revision {header.version}")
+        return self.run("dcmp", str(source), cancel_event=cancel_event).stdout
 
     def inspect(self, mode: str, path: str | Path, *, context: int = 4, show_tokens: bool = False,
                 max_tokens: int = 200, breakpoints=(), cancel_event=None) -> str:
         if mode not in {"info", "hexdump", "audit", "consts", "disasm", "dbg"}:
             raise ValueError(f"Unsupported inspection mode: {mode}")
+        source_path = Path(path).expanduser().resolve()
+        if source_path.is_dir():
+            from project_ops import iter_project_files
+            reports = []
+            for binary in iter_project_files(source_path, ".gdc", include_compiled_output=True):
+                try:
+                    reports.append(self.inspect(mode, binary, context=context, show_tokens=show_tokens,
+                                                max_tokens=max_tokens, breakpoints=breakpoints,
+                                                cancel_event=cancel_event))
+                except Exception as exc:
+                    reports.append(f"FILE: {binary}\nERROR: {exc}")
+            return "\n".join(reports) if reports else f"No .gdc files found under {source_path}"
+        data = source_path.read_bytes()
+        header = compat.inspect_header(data)
+        if header.version not in (100, 101):
+            if mode == "info":
+                profile = header.profile
+                return "\n".join([
+                    f"FILE: {source_path}", f"GDSC VERSION: {header.version}",
+                    f"ENGINE FAMILY: {profile.family if profile else 'Unknown'}",
+                    f"ENGINE RELEASES: {profile.engine_range if profile else 'Unknown'}",
+                    f"FILE SIZE: {len(data):,} bytes", f"STORED PAYLOAD: {header.stored_size:,} bytes",
+                    "VALIDATION: Header recognized; full token validation requires GDRE Tools.",
+                    "DECOMPILATION: Configure GDRE_TOOLS or add gdre_tools to PATH; set the exact engine version in Compiler settings when required.",
+                ])
+            if header.profile and header.profile.capability == "gdre":
+                raise compat.ExternalBytecodeToolRequired(
+                    f"Static {mode} is available for GDSC v100/v101. Revision {header.version} "
+                    "requires GDRE Tools for legacy decoding and decompilation."
+                )
+            raise compat.GDSCCompatibilityError(f"Unknown GDSC revision {header.version}; no decoder was selected.")
+        if header.version == 100:
+            core = self._compat_core()
+            normalized = compat.normalize_v100(data, core)
+            with tempfile.TemporaryDirectory(prefix="opengds-v100-") as temp:
+                normalized_path = Path(temp) / source_path.name
+                normalized_path.write_bytes(normalized)
+                report = self._inspect_command(mode, normalized_path, context, show_tokens, max_tokens, breakpoints, cancel_event)
+            report = report.replace(str(normalized_path), str(source_path))
+            report = re.sub(r"(?m)^GDSC version: 101$", "GDSC version: 100", report)
+            report = re.sub(r"(?m)^BYTECODE VERSION: 101$", "BYTECODE VERSION: 100", report)
+            return report
+        return self._inspect_command(mode, source_path, context, show_tokens, max_tokens, breakpoints, cancel_event)
+
+    def _inspect_command(self, mode, path, context, show_tokens, max_tokens, breakpoints, cancel_event):
         args = [mode, str(path)]
         if mode == "dbg":
             args += ["--classic", "--context", str(context), "--max-tokens", str(max_tokens)]

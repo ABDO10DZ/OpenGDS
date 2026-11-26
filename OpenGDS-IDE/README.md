@@ -1,8 +1,8 @@
 # OpenGDS-IDE 1.0.3
 
-A desktop workspace for GDScript and OpenGDS GDSC v101 tooling. It combines the OpenGDS Python core with Godot's own CLI, GDScript Language Server (LSP), Debug Adapter Protocol (DAP), and project/package utilities.
+A desktop workspace for GDScript and OpenGDS GDSC v100/v101 tooling, with detection and optional GDRE Tools support for legacy Godot bytecode revisions 1–13. It combines the OpenGDS Python core with Godot's own CLI, GDScript Language Server (LSP), Debug Adapter Protocol (DAP), and project/package utilities.
 
-> **Scope statement:** this is a feature-rich development build, not a claim of complete parity with the Godot Editor or VS Code. The bundled OpenGDS compiler serializes a GDScript token buffer into GDSC v101; it is not a replacement for Godot's full parser, semantic analyzer, type checker, importer, or project exporter. Use Godot validation and the engine itself for engine-level correctness.
+> **Scope statement:** this is a feature-rich development build, not a claim of complete parity with the Godot Editor or VS Code. The IDE writes GDSC v100/v101 natively; older bytecode revisions are routed through GDRE Tools with an explicit engine target. The bundled OpenGDS core is not a replacement for Godot's full parser, semantic analyzer, type checker, importer, or project exporter. Use Godot validation and the engine itself for engine-level correctness.
 
 ## Get started on Windows
 
@@ -66,7 +66,7 @@ OpenGDS menu and explorer context actions expose the bundled core:
 
 | Action | Input | Result |
 |---|---|---|
-| Compile | `.gd` or a folder/project | GDSC v101 `.gdc` |
+| Compile | `.gd` or a folder/project | GDSC v100/v101; legacy revisions through GDRE Tools |
 | Decompile | `.gdc` or a folder/project | reconstructed `.gd` source |
 | Info / validate | `.gdc` | header, hash, compression, counts and supported-structure validation |
 | Static debug | `.gdc` or `.gd` | token-context report and source-line breakpoint mapping |
@@ -86,7 +86,7 @@ Double-clicking a `.gdc` file runs **OpenGDS info** automatically. The report ta
 - Existing output files are skipped unless overwrite is enabled. Continue-on-error is configurable. Every file result is included in the operation summary/log.
 - IDE debug-cache and decompile working areas are excluded from source scans to avoid accidental recursion.
 
-The `OpenGDS.py` CLI currently exposes `info`, `comp`, `dcmp`, `hexdump`, `audit`, `consts`, `disasm`, `dbg`, and `diff`. OpenGDS is currently targeted at **GDSC v101**. The upstream compiler performs tokenizer and token-buffer serialization; it does not implement the complete Godot compiler or semantic checker. Decompiled output cannot restore comments that were discarded from bytecode or guarantee original formatting. See the upstream [OpenGDS project](https://github.com/ABDO10DZ/OpenGDS) for core behavior and format scope.
+The `OpenGDS.py` CLI exposes `info`, `comp`, `dcmp`, `hexdump`, `audit`, `consts`, `disasm`, `dbg`, and `diff` for GDSC v101. The IDE compatibility adapter also reads/writes v100 and recognizes legacy revisions 1–13 (Godot 1.x–3.x); those legacy operations require GDRE Tools and an exact engine release or commit in Compiler settings. Static token analysis is available for v100/v101, while legacy files can be decompiled through GDRE Tools. The tokenizer/compiler does not implement Godot's complete parser or semantic checker, and decompiled output cannot restore discarded comments or guarantee original formatting. See the upstream [OpenGDS project](https://github.com/ABDO10DZ/OpenGDS) for core behavior and format scope.
 
 ## Godot integration
 
@@ -99,7 +99,7 @@ Available integration includes:
 - Godot DAP for breakpoints, continue/pause, step over/into/out, call stack, scopes/variables and watch expressions (default `127.0.0.1:6006`).
 - Godot local runtime run/debug; source breakpoints are forwarded with Godot's `--breakpoints=source::line` syntax.
 - Godot `--check-only` parse validation for current or all `.gd` files. It is a parse check, not an OpenGDS `.gdc` compiler.
-- Headless project import (`--import`), PCK export (`--export-pack`), debug build (`--export-debug`) and release build (`--export-release`), using existing export presets. These are Godot engine import/export operations; OpenGDS `comp` remains the operation that writes the separate GDSC v101 `.gdc` container.
+- Headless project import (`--import`), PCK export (`--export-pack`), debug build (`--export-debug`) and release build (`--export-release`), using existing export presets. These are Godot engine import/export operations; OpenGDS `comp` remains the operation that writes the separate GDSC `.gdc` container.
 - **Custom Godot CLI arguments** for additional engine options (conversion, doctool, benchmarking, custom headless jobs, etc.). The command is launched without a shell.
 - OpenGDS core runtime debug with `--godot`, and lifecycle breakpoints with `--interrupt`. This is separate from LSP/DAP. When selecting a `.gd`, the IDE compiles an uncompressed temporary `.gdc` and passes the matching `res://` source mapping to OpenGDS. The engine owns runtime execution and stepping.
 
@@ -165,7 +165,7 @@ The included tests cover compiler/decompiler round trips, info reports, core err
 
 ## Known compatibility boundaries
 
-- GDSC support is v101; other bytecode versions and encrypted `.gde` scripts are not supported by this bundled core.
+- Native decoding is v101 in the bundled core and v100 through the IDE compatibility adapter. Legacy revisions 1–13 are recognized and delegated to GDRE Tools; direct native decoding and static token analysis for those legacy versions are not included. Encrypted `.gde` scripts are not supported.
 - OpenGDS compilation is not Godot's full parser/type checker. Validate `.gd` source with Godot as a separate step.
 - Decompilation reconstructs tokenized source; comments and formatting may be lost.
 - Encrypted PCK directories, encrypted PCK entries, delta/removal patches, APK signature manipulation and package decryption are not supported.

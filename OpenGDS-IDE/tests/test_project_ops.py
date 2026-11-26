@@ -45,6 +45,26 @@ class ProjectOpsTests(unittest.TestCase):
             self.assertEqual(len(summary.succeeded), 1)
             self.assertTrue((project / ".opengds" / "decompiled" / "external.gd").is_file())
 
+    def test_project_compile_and_decompile_support_gdsc_v100(self):
+        import struct
+        root_dir = Path(__file__).resolve().parents[1]
+        backend = OpenGDSBackend(root_dir / "OpenGDS.py")
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td) / "project"
+            project.mkdir()
+            (project / "main.gd").write_text("extends Node\nfunc run():\n    return 42\n", encoding="utf-8")
+            compiled = project / "compiled"
+            summary = compile_project(backend, project, compiled, compressed=False, overwrite=True,
+                                      bytecode_version=100)
+            self.assertEqual(1, len(summary.succeeded))
+            binary = compiled / "main.gdc"
+            self.assertEqual(100, struct.unpack_from("<I", binary.read_bytes(), 4)[0])
+            decompiled = project / "decompiled"
+            summary = decompile_project(backend, project, decompiled, overwrite=True,
+                                        compiled_root=compiled)
+            self.assertEqual(1, len(summary.succeeded))
+            self.assertIn("return 42", (decompiled / "compiled" / "main.gd").read_text(encoding="utf-8"))
+
     def test_godot_check_command_uses_project_relative_resource_path(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "My Project"
