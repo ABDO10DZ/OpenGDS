@@ -83,7 +83,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QFileDialog, QMessageBox, QInputDialog, QDialog, QFormLayout,
     QLineEdit, QCheckBox, QSpinBox, QComboBox, QPushButton, QDialogButtonBox,
     QListWidget, QListWidgetItem, QMenu, QToolButton, QLabel, QTextEdit, QStyledItemDelegate,
-    QScrollArea, QAbstractScrollArea, QDockWidget
+    QScrollArea, QAbstractScrollArea, QDockWidget, QSizePolicy
 )
 
 from project_manager import create_project, load_project, save_project, History, workspace_from_directory
@@ -352,6 +352,8 @@ class DockTitleBar(QWidget):
         layout.setSpacing(4)
         self.title_label = QLabel(dock.windowTitle(), self)
         self.title_label.setObjectName("dockTitleLabel")
+        self.title_label.setMinimumWidth(0)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.title_label, 1)
         self.float_button = QToolButton(self)
         self.float_button.setObjectName("dockFloatButton")
@@ -604,15 +606,27 @@ class SettingsDialog(QDialog):
 
         compiler = QWidget(); cf = QFormLayout(compiler)
         self.compile_tab_size = QSpinBox(); self.compile_tab_size.setRange(1, 8); self.compile_tab_size.setValue(int(project.get("compile", {}).get("tab_size", 4)))
+        self.compile_bytecode_version = QComboBox()
+        self.compile_bytecode_version.addItem("GDSC v101 — Godot 4.5+", 101)
+        self.compile_bytecode_version.addItem("GDSC v100 — Godot 4.3–4.4", 100)
+        self.compile_bytecode_version.addItem("GDRE / Custom — Godot 1.x–4.x", 0)
+        target_version = int(project.get("compile", {}).get("bytecode_version", 101))
+        if target_version not in (0, 100, 101):
+            target_version = 101
+        self.compile_bytecode_version.setCurrentIndex(max(0, self.compile_bytecode_version.findData(target_version)))
+        self.compile_engine_version = QLineEdit(str(project.get("compile", {}).get("engine_version", "")))
+        self.compile_engine_version.setPlaceholderText("Exact Godot release or commit, e.g. 3.5.0")
         self.compressed = QCheckBox("Compress compiled GDSC output"); self.compressed.setChecked(project.get("compile", {}).get("compressed", True))
         self.overwrite = QCheckBox("Allow overwriting compiled output"); self.overwrite.setChecked(project.get("compile", {}).get("overwrite", False))
         self.continue_error = QCheckBox("Continue compiling other files after an error"); self.continue_error.setChecked(project.get("compile", {}).get("continue_on_error", True))
         self.compile_output = QLineEdit(project.get("compile", {}).get("output_directory", ".opengds/compiled"))
         self.validate_after_compile = QCheckBox("Offer Godot --check-only validation after project compilation")
         self.validate_after_compile.setChecked(project.get("compile", {}).get("validate_with_godot", True))
+        cf.addRow("Target bytecode", self.compile_bytecode_version)
+        cf.addRow("GDRE engine version", self.compile_engine_version)
         cf.addRow("Tokenizer tab size", self.compile_tab_size); cf.addRow(self.compressed); cf.addRow(self.overwrite); cf.addRow(self.continue_error)
         cf.addRow("Project output directory", self.compile_output); cf.addRow(self.validate_after_compile)
-        compile_note = QLabel("OpenGDS comp creates GDSC v101 token buffers. Godot --check-only performs engine parser/type validation; it is not an export of a standalone .gdc file.")
+        compile_note = QLabel("v101 targets Godot 4.5+; v100 targets Godot 4.3–4.4. Godot 1.x/2.x/3.x bytecode is detected and handled through GDRE Tools. Choose GDRE / Custom and enter the exact engine release or commit; configure GDRE_TOOLS or add gdre_tools to PATH. Godot --check-only validates source; it does not export a .gdc file.")
         compile_note.setWordWrap(True); cf.addRow(compile_note)
         tabs.addTab(compiler, "Compiler")
 
@@ -667,6 +681,8 @@ class SettingsDialog(QDialog):
         self.project.setdefault("compile", {}).update({
             "compressed": self.compressed.isChecked(), "overwrite": self.overwrite.isChecked(),
             "continue_on_error": self.continue_error.isChecked(), "tab_size": self.compile_tab_size.value(),
+            "bytecode_version": int(self.compile_bytecode_version.currentData()),
+            "engine_version": self.compile_engine_version.text().strip(),
             "output_directory": self.compile_output.text().strip() or ".opengds/compiled",
             "validate_with_godot": self.validate_after_compile.isChecked(),
         })
@@ -680,6 +696,9 @@ class MainWindow(QMainWindow):
         if icon_file.is_file():
             self.setWindowIcon(QIcon(str(icon_file)))
         self.resize(1520, 960)
+        # Keep the native minimum below compact laptop work areas. Dock contents
+        # can scroll or compress when the window is resized smaller.
+        self.setMinimumSize(680, 480)
         self.settings = QSettings("OpenGDS", "IDE")
         self.log_path = configure_logging(log_directory() / "opengds-ide.log")
         self.log_signal = LogSignal(self)
@@ -764,6 +783,22 @@ class MainWindow(QMainWindow):
         if geometry:
             self.restoreGeometry(geometry)
 
+        # Saved geometry may come from a larger monitor. Clamp it before the
+        # native window is shown, accounting for the title bar and frame.
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.winId()
+            handle = self.windowHandle()
+            margins = handle.frameMargins() if handle is not None else None
+            frame_width = margins.left() + margins.right() if margins is not None else 0
+            frame_height = margins.top() + margins.bottom() if margins is not None else 0
+            max_width = max(1, available.width() - frame_width)
+            max_height = max(1, available.height() - frame_height)
+            self.setMinimumSize(min(680, max_width), min(480, max_height))
+            if self.width() > max_width or self.height() > max_height:
+                self.resize(min(self.width(), max_width), min(self.height(), max_height))
+
         try:
             version = int(self.settings.value("dock_layout_version", 2))
         except (TypeError, ValueError):
@@ -832,14 +867,27 @@ class MainWindow(QMainWindow):
         self.log_search = QLineEdit()
         self.log_search.setPlaceholderText("Search log messages…")
         self.log_search.textChanged.connect(lambda _text: self.apply_log_filter(self.log_filter.currentText()))
-        open_logs = QPushButton("Open logs folder")
-        open_logs.clicked.connect(self.open_logs_folder)
-        clear_logs = QPushButton("Clear view")
-        clear_logs.clicked.connect(self.clear_log_view)
+        open_logs = QAction("Open logs folder", self)
+        open_logs.triggered.connect(self.open_logs_folder)
+        clear_logs = QAction("Clear view", self)
+        clear_logs.triggered.connect(self.clear_log_view)
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Category:")); filter_row.addWidget(self.log_filter)
-        filter_row.addWidget(self.log_search, 2)
-        filter_row.addWidget(open_logs); filter_row.addWidget(clear_logs)
+        console_menu_button = QToolButton()
+        console_menu_button.setText("More")
+        console_menu_button.setToolTip("Log actions")
+        console_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        console_menu = QMenu(console_menu_button)
+        console_menu.addAction(open_logs)
+        console_menu.addAction(clear_logs)
+        console_menu_button.setMenu(console_menu)
+        self.log_filter.setMinimumWidth(90)
+        self.log_filter.setMaximumWidth(145)
+        self.log_filter.setMinimumContentsLength(8)
+        self.log_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.log_search.setMinimumWidth(50)
+        filter_row.addWidget(self.log_filter)
+        filter_row.addWidget(self.log_search, 1)
+        filter_row.addWidget(console_menu_button)
         self.console_input = QLineEdit()
         self.console_input.setPlaceholderText("Evaluate watch expression while paused… (Enter)")
         self.console_input.returnPressed.connect(self.evaluate_watch_expression)
@@ -1155,8 +1203,8 @@ class MainWindow(QMainWindow):
             self._dock_view_actions[dock.objectName()] = action
             action_title_changed = lambda title, target_action=action: target_action.setText(title)
             dock.windowTitleChanged.connect(action_title_changed)
-            float_action = self.act(dock.windowTitle(), lambda target=dock: self.float_panel(target))
-            dock_back_action = self.act(dock.windowTitle(), lambda target=dock: self.dock_panel(target))
+            float_action = self.act(dock.windowTitle(), lambda _checked=False, target=dock: self.float_panel(target))
+            dock_back_action = self.act(dock.windowTitle(), lambda _checked=False, target=dock: self.dock_panel(target))
             float_menu.addAction(float_action)
             dock_back_menu.addAction(dock_back_action)
             self._float_panel_actions[dock] = float_action
@@ -1433,28 +1481,46 @@ class MainWindow(QMainWindow):
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(8)
         if source and source.suffix.lower() == ".gdc":
             action_row = QHBoxLayout()
-            actions = [
-                ("Decompile → .gd", lambda p=source: self.decompile_single_binary(p)),
-                ("Static Debug", lambda p=source: self.backend_action("dbg", p)),
-                ("Runtime Debug (--godot)", lambda p=source: self.start_legacy_debug(p, force_interrupt=False)),
-                ("Break at Startup (--interrupt)", lambda p=source: self.start_legacy_debug(p, force_interrupt=True)),
-                ("Compare…", lambda p=source: self.backend_action("diff", p)),
-                ("Audit", lambda p=source: self.backend_action("audit", p)),
-                ("Disassemble", lambda p=source: self.backend_action("disasm", p)),
-                ("Constants", lambda p=source: self.backend_action("consts", p)),
-                ("Hex Dump", lambda p=source: self.backend_action("hexdump", p)),
-            ]
-            for label, callback in actions:
-                button = QPushButton(label)
-                button.clicked.connect(callback)
-                action_row.addWidget(button)
+            action_row.setContentsMargins(0, 0, 0, 0)
+            action_row.setSpacing(8)
+
+            decompile = QPushButton("Decompile to .gd")
+            decompile.setObjectName("primaryButton")
+            decompile.setToolTip("Reconstruct editable GDScript from this compiled file")
+            decompile.clicked.connect(lambda _checked=False, p=source: self.decompile_single_binary(p))
+            action_row.addWidget(decompile)
+
+            static_debug = QPushButton("Static Debug")
+            static_debug.setObjectName("gdscStaticDebugButton")
+            static_debug.setToolTip("Inspect token context and source-line mapping")
+            static_debug.clicked.connect(lambda _checked=False, p=source: self.backend_action("dbg", p))
+            action_row.addWidget(static_debug)
+
+            more = QToolButton()
+            more.setObjectName("gdscMoreActions")
+            more.setText("More…")
+            more.setToolTip("More actions for this compiled file")
+            more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            more_menu = QMenu(more)
+            more_menu.addAction("Runtime Debug (Godot)", lambda _checked=False, p=source: self.start_legacy_debug(p, force_interrupt=False))
+            more_menu.addAction("Break at Startup", lambda _checked=False, p=source: self.start_legacy_debug(p, force_interrupt=True))
+            more_menu.addSeparator()
+            more_menu.addAction("Compare…", lambda _checked=False, p=source: self.backend_action("diff", p))
+            more_menu.addAction("Audit", lambda _checked=False, p=source: self.backend_action("audit", p))
+            more_menu.addAction("Disassemble", lambda _checked=False, p=source: self.backend_action("disasm", p))
+            more_menu.addAction("Constants", lambda _checked=False, p=source: self.backend_action("consts", p))
+            more_menu.addAction("Hex Dump", lambda _checked=False, p=source: self.backend_action("hexdump", p))
+            more.setMenu(more_menu)
+            action_row.addWidget(more)
             action_row.addStretch(1)
             layout.addLayout(action_row)
         view = QPlainTextEdit()
         view.setReadOnly(True)
+        view.setMinimumSize(0, 0)
         view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         view.setFont(QFont(self.settings.value("font", "Consolas"), int(self.settings.value("font_size", 11))))
         view.setPlainText(content)
@@ -1668,9 +1734,9 @@ class MainWindow(QMainWindow):
         special_actions = {}
         if selected.is_dir():
             try:
-                if next(iter_project_files(selected, ".gd"), None):
+                if iter_project_files(selected, ".gd"):
                     special_actions[menu.addAction("Compile .gd files in this folder…")] = "compile_selected_folder"
-                if next(iter_project_files(selected, ".gdc", include_compiled_output=True), None):
+                if iter_project_files(selected, ".gdc", include_compiled_output=True):
                     special_actions[menu.addAction("Decompile .gdc files in this folder…")] = "decompile_selected_folder"
             except OSError:
                 pass
@@ -2755,6 +2821,8 @@ class MainWindow(QMainWindow):
             "overwrite": bool(cfg.get("overwrite", False)),
             "continue_on_error": bool(cfg.get("continue_on_error", True)),
             "tab_size": int(cfg.get("tab_size", 4)),
+            "bytecode_version": int(cfg.get("bytecode_version", 101)) if int(cfg.get("bytecode_version", 101)) in (0, 100, 101) else 101,
+            "engine_version": str(cfg.get("engine_version", "")).strip(),
             "validate_with_godot": bool(cfg.get("validate_with_godot", True)),
         }
 
@@ -2805,7 +2873,8 @@ class MainWindow(QMainWindow):
             backend = self.ensure_backend()
             def work():
                 return backend.compile(source, output, compressed=cfg["compressed"], overwrite=overwrite,
-                                       tab_size=cfg["tab_size"], continue_on_error=cfg["continue_on_error"])
+                                       tab_size=cfg["tab_size"], continue_on_error=cfg["continue_on_error"],
+                                       bytecode_version=cfg["bytecode_version"], engine_version=cfg["engine_version"])
             def completed(result):
                 self.log(result.stdout or f"Compiled {source} → {output}", category="GDSCRIPT")
                 self.show_report_tab(f"Compile — {source.name}", result.stdout or f"Compiled successfully:\n{output}", source)
@@ -2835,7 +2904,7 @@ class MainWindow(QMainWindow):
                         return
             backend = self.ensure_backend()
             def work():
-                source = backend.decompile(binary)
+                source = backend.decompile(binary, engine_version=self._compile_config()["engine_version"])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 temp = output.with_name(output.name + ".opengds-tmp")
                 try:
@@ -2878,7 +2947,8 @@ class MainWindow(QMainWindow):
         def work():
             return compile_project(backend, root, output_root,
                 compressed=cfg["compressed"], overwrite=cfg["overwrite"],
-                tab_size=cfg["tab_size"], continue_on_error=cfg["continue_on_error"])
+                tab_size=cfg["tab_size"], continue_on_error=cfg["continue_on_error"],
+                bytecode_version=cfg["bytecode_version"], engine_version=cfg["engine_version"])
         def completed(summary):
             self.show_operation_summary(summary)
             if summary.succeeded and not summary.failed and cfg.get("validate_with_godot", False) and (Path(root) / "project.godot").is_file():
@@ -2902,7 +2972,7 @@ class MainWindow(QMainWindow):
         def work():
             return decompile_project(self.ensure_backend(), root, output_root,
                 overwrite=cfg["overwrite"], continue_on_error=cfg["continue_on_error"],
-                compiled_root=compiled_root)
+                compiled_root=compiled_root, engine_version=cfg["engine_version"])
         self.run_background("Decompile all project GDSC with OpenGDS", work, self.show_operation_summary)
 
     def find_godot(self, prompt=True):
@@ -3202,12 +3272,13 @@ class MainWindow(QMainWindow):
                 outdir = QFileDialog.getExistingDirectory(self, "Choose compiled .gdc output folder", str(Path(folder) / ".opengds-compiled"))
                 if not outdir:
                     return
-                args = ["comp", folder, "--outdir", outdir, "--tab-size", str(cfg["tab_size"])]
-                if not cfg["compressed"]: args.append("--no-compress")
-                if cfg["overwrite"]: args.append("--force")
-                if cfg["continue_on_error"]: args.append("--continue-on-error")
-                self.run_background("Compile folder", lambda: backend.run(*args).stdout,
-                                    lambda output: self.show_report_tab("Folder compilation", output))
+                summary = lambda: compile_project(
+                    backend, folder, outdir, compressed=cfg["compressed"],
+                    overwrite=cfg["overwrite"], tab_size=cfg["tab_size"],
+                    continue_on_error=cfg["continue_on_error"],
+                    bytecode_version=cfg["bytecode_version"], engine_version=cfg["engine_version"]
+                )
+                self.run_background("Compile folder", summary, self.show_operation_summary)
                 return
             if mode == "compile_project":
                 root = self._choose_project_root()
@@ -3233,7 +3304,11 @@ class MainWindow(QMainWindow):
                 if not folder: return
                 outdir = QFileDialog.getExistingDirectory(self, "Choose reconstructed .gd output folder", str(Path(folder) / ".opengds-decompiled"))
                 if not outdir: return
-                self.run_background("Decompile folder", lambda: backend.run("dcmp", folder, "--outdir", outdir).stdout,
+                cfg = self._compile_config()
+                args = ["dcmp", folder, "--outdir", outdir, "--force"]
+                if cfg["engine_version"]:
+                    args += ["--engine-version", cfg["engine_version"]]
+                self.run_background("Decompile folder", lambda: backend.run(*args).stdout,
                                     lambda output: self.show_report_tab("Folder decompilation", output))
                 return
             if mode == "decompile_project":
@@ -3294,7 +3369,8 @@ class MainWindow(QMainWindow):
                 def static_debug_work():
                     if source.suffix.lower() == ".gd":
                         binary.parent.mkdir(parents=True, exist_ok=True)
-                        backend.compile(source, binary, compressed=False, overwrite=True, tab_size=cfg["tab_size"])
+                        backend.compile(source, binary, compressed=False, overwrite=True, tab_size=cfg["tab_size"],
+                                        bytecode_version=101)
                     return backend.inspect("dbg", binary, context=debug_cfg.get("context", 4),
                         show_tokens=debug_cfg.get("show_tokens", False), max_tokens=debug_cfg.get("max_tokens", 200), breakpoints=breakpoints)
                 self.run_background(f"Static debug {source.name}", static_debug_work,

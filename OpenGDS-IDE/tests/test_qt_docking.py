@@ -6,13 +6,14 @@ Run with the IDE environment:
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import Qt, QSettings
+    from PySide6.QtCore import Qt, QSettings, QPoint
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QDockWidget
+    from PySide6.QtWidgets import QApplication, QDockWidget, QPushButton, QToolButton
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
@@ -51,6 +52,63 @@ class NativeWorkspaceDockTests(unittest.TestCase):
         QTest.qWait(40)
         self.docks = self.window._all_tool_panels
 
+    def test_gdc_report_actions_leave_dock_dividers_room_to_move(self):
+        source = Path(self._settings_dir.name) / "sample.gdc"
+        source.write_bytes(b"GDSC")
+        source_code = source.with_suffix(".gd")
+        source_code.write_text("extends Node\n" + "# long source line " * 100, encoding="utf-8")
+
+        class StubBackend:
+            def inspect(self, mode, path):
+                return f"{mode}: {path}"
+
+        original_backend = self.window.backend
+        original_runner = self.window.run_background
+        original_decompiler = self.window.decompile_single_binary
+        original_action = self.window.backend_action
+        self.addCleanup(setattr, self.window, "backend", original_backend)
+        self.addCleanup(setattr, self.window, "run_background", original_runner)
+        self.addCleanup(setattr, self.window, "decompile_single_binary", original_decompiler)
+        self.addCleanup(setattr, self.window, "backend_action", original_action)
+        self.window.backend = StubBackend()
+        self.window.run_background = lambda _name, worker, on_success: on_success(worker())
+        self.window.open_path(source_code)
+        self.app.processEvents()
+        self.assertLess(self.window.minimumWidth(), 1600)
+
+        self.window.open_path(source)
+        report = self.window.tabs.currentWidget()
+        self.app.processEvents()
+
+        self.window.resize(1400, 900)
+        self.app.processEvents()
+        self.assertLess(self.window.minimumWidth(), 1600)
+        self.assertLess(self.window.minimumHeight(), 713)
+        self.assertLessEqual(report.minimumSizeHint().width(), 700)
+        self.assertLess(self.window.output_dock.minimumSizeHint().width(), 400)
+
+        previous_width = self.window.explorer_dock.width()
+        self.window.resizeDocks(
+            [self.window.explorer_dock], [previous_width + 80], Qt.Orientation.Horizontal
+        )
+        self.app.processEvents()
+        self.assertGreater(self.window.explorer_dock.width(), previous_width + 20)
+
+        more = report.findChild(QToolButton, "gdscMoreActions")
+        self.assertIsNotNone(more)
+        menu_actions = {action.text() for action in more.menu().actions()}
+        self.assertTrue({"Compare…", "Audit", "Disassemble", "Constants", "Hex Dump"} <= menu_actions)
+
+        calls = []
+        self.window.decompile_single_binary = lambda path: calls.append(("decompile", path))
+        self.window.backend_action = lambda mode, path: calls.append((mode, path))
+        decompile = next(button for button in report.findChildren(QPushButton) if button.text() == "Decompile to .gd")
+        decompile.click()
+        self.assertEqual(calls.pop(), ("decompile", source))
+        compare = next(action for action in more.menu().actions() if action.text() == "Compare…")
+        compare.trigger()
+        self.assertEqual(calls.pop(), ("diff", source))
+
     def test_all_five_panels_are_native_closable_movable_floatable_docks(self):
         self.assertEqual(len(self.docks), 5)
         for dock in self.docks:
@@ -86,6 +144,64 @@ class NativeWorkspaceDockTests(unittest.TestCase):
         self.app.processEvents()
         self.assertFalse(dock.isFloating())
         self.assertEqual(self.window.dockWidgetArea(dock), Qt.DockWidgetArea.LeftDockWidgetArea)
+
+    def test_view_menu_float_and_dock_back_actions_keep_the_selected_panel(self):
+        dock = self.window.explorer_dock
+        self.window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.window._float_panel_actions[dock].trigger()
+        self.app.processEvents()
+        self.assertTrue(dock.isFloating())
+        back_action = self.window._dock_back_panel_actions[dock]
+        self.assertTrue(back_action.isEnabled())
+        back_action.trigger()
+        self.app.processEvents()
+        self.assertFalse(dock.isFloating())
+        self.assertEqual(self.window.dockWidgetArea(dock), Qt.DockWidgetArea.RightDockWidgetArea)
+
+    def test_tree_context_menu_lists_project_files_without_iterator_assumptions(self):
+        from unittest.mock import patch
+
+        class Action:
+            def __init__(self, text):
+                self._text = text
+
+            def text(self):
+                return self._text
+
+        class Menu:
+            def __init__(self, *_args):
+                self.items = []
+
+            def addAction(self, text):
+                action = Action(text)
+                self.items.append(action)
+                return action
+
+            def addSeparator(self):
+                pass
+
+            def addMenu(self, text):
+                menu = Menu(text)
+                self.items.append(Action(text))
+                return menu
+
+            def exec(self, *_args):
+                return None
+
+        with tempfile.TemporaryDirectory(dir=self._settings_dir.name) as temp:
+            root = Path(temp)
+            (root / "script.gd").write_text("extends Node\n", encoding="utf-8")
+            (root / "script.gdc").write_bytes(b"GDSC")
+            old_root = self.window.root
+            self.window.root = root
+            self.addCleanup(setattr, self.window, "root", old_root)
+            menus = []
+            with patch.object(self.main_module, "QMenu", side_effect=lambda *args: menus.append(Menu(*args)) or menus[-1]):
+                self.window.tree_context_menu(QPoint(0, 0))
+            self.assertEqual(len(menus), 1)
+            labels = {action.text() for action in menus[0].items}
+            self.assertIn("Compile .gd files in this folder…", labels)
+            self.assertIn("Decompile .gdc files in this folder…", labels)
 
     def test_native_dock_can_move_between_left_and_right_areas(self):
         dock = self.window.explorer_dock
